@@ -569,4 +569,12 @@ flask>=3.0
 
 ---
 
+## 许可证
+
+本项目采用 **GNU Affero General Public License v3.0 or later（AGPL-3.0-or-later）** 发布，完整条款见 [LICENSE](LICENSE)。
+
+内置的第三方工具 `httpx` 与 `URLFinder` 仍分别遵循其自带的 MIT 许可证，许可证文件位于 `arguscaner/tools/` 对应目录。
+
+---
+
 *本 README 记录了截至 2026‑09‑04 的完整架构与实现计划，后续功能迭代请同步更新对应章节。*

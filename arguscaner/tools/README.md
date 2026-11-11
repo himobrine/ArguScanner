@@ -28,4 +28,9 @@ tools/
 
 ## 许可证
 
-`httpx` 与 `URLFinder` 均为 MIT 许可证，许可证文件保存在各自子目录中。
+工具本体仍遵循各自许可证：
+
+- `httpx`：MIT
+- `URLFinder`：MIT
+
+ArguScanner 项目主体采用 **AGPL-3.0-or-later**，详见项目根目录的 `LICENSE`。
