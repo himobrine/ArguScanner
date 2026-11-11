@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}扫描结果 · {{ task_id }}{% endblock %}
+{% block content %}
+{% set type_order = ['live_urls', 'open_ports', 'api_endpoints', 'subdomains', 'js_urls', 'js_subdomains'] %}
+{% set type_labels = {
+    'live_urls': '存活 URL',
+    'open_ports': '开放端口',
+    'api_endpoints': 'API 端点',
+    'subdomains': '子域名',
+    'js_urls': 'JS 链接',
+    'js_subdomains': 'JS 子域名'
+} %}
+{% set type_hints = {
+    'live_urls': 'httpx 探活的 HTTP/HTTPS 服务',
+    'open_ports': 'nmap 发现的开放端口与服务指纹',
+    'api_endpoints': '指纹与字典探测命中的接口路径',
+    'subdomains': 'OneForAll 收集的子域名资产',
+    'js_urls': 'JSFinder / URLFinder 提取的链接',
+    'js_subdomains': 'JS 文件中出现的子域名'
+} %}
+{% set column_defs = {
+    'live_urls': ['url', 'status', 'title', 'ip'],
+    'open_ports': ['ip', 'port', 'protocol', 'state', 'service', 'banner'],
+    'api_endpoints': ['url', 'status', 'method', 'source'],
+    'subdomains': ['domain', 'ip', 'source'],
+    'js_urls': ['type', 'data', 'source'],
+    'js_subdomains': ['type', 'data', 'source']
+} %}
+{% set header_labels = {
+    'url': 'URL', 'status': '状态', 'title': '标题', 'ip': 'IP',
+    'port': '端口', 'protocol': '协议', 'state': '状态', 'service': '服务',
+    'banner': 'Banner', 'domain': '域名', 'source': '来源', 'type': '类型',
+    'data': '数据', 'method': '方法'
+} %}
+{% set total = namespace(value=0) %}
+{% for rtype, recs in records.items() %}{% set total.value = total.value + recs|length %}{% endfor %}
+
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Scan Results</div>
+        <h1 class="page-title">扫描结果</h1>
+        <p class="page-sub">
+            任务 <span class="mono result-id">{{ task_id }}</span> · 共
+            <strong>{{ total.value }}</strong> 条去重记录
+        </p>
+    </div>
+    <div class="page-actions">
+        <a class="btn" href="/status/{{ task_id }}">
+            <svg><use href="#i-flow"/></svg>查看进度
+        </a>
+        <a href="/results/{{ task_id }}/export" class="btn-export">
+            <svg><use href="#i-download"/></svg>导出 Excel
+        </a>
+    </div>
+</div>
+
+<div class="stat-grid" style="margin-bottom:20px;">
+    {% for rtype in type_order %}
+    <div class="stat {{ 'accent' if rtype == 'live_urls' else ('success' if rtype == 'open_ports' else ('purple' if rtype == 'api_endpoints' else '')) }}">
+        <div class="stat-value" data-stat="{{ rtype }}">{{ records.get(rtype, [])|length }}</div>
+        <div class="stat-label">{{ type_labels[rtype] }}</div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if records %}
+<div class="section-nav">
+    {% for rtype in type_order %}
+        {% if records.get(rtype) %}
+        <a href="#sec-{{ rtype }}">{{ type_labels[rtype] }} · {{ records[rtype]|length }}</a>
+        {% endif %}
+    {% endfor %}
+    {% for rtype, recs in records.items() %}
+        {% if rtype not in type_order and recs %}
+        <a href="#sec-{{ rtype }}">{{ rtype }} · {{ recs|length }}</a>
+        {% endif %}
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if total.value == 0 %}
+<section class="card">
+    <div class="empty">
+        <span class="empty-icon"><svg><use href="#i-inbox"/></svg></span>
+        <strong>暂无扫描结果</strong>
+        <span>任务可能仍在运行，或尚未产生可导出的记录。</span>
+        <a class="btn btn-sm" href="/status/{{ task_id }}" style="margin-top:8px;">查看任务进度</a>
+    </div>
+</section>
+{% endif %}
+
+{% for rtype in type_order if records.get(rtype) %}
+{% set recs = records.get(rtype, []) %}
+<section class="card" id="sec-{{ rtype }}" style="margin-top:20px;">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title">
+                {{ type_labels.get(rtype, rtype) }}
+                <span class="badge badge-accent">{{ recs|length }}</span>
+            </h2>
+            <p class="card-sub">{{ type_hints.get(rtype, rtype) }}</p>
+        </div>
+        {% if recs %}
+        <div class="search-box" style="max-width:260px;">
+            <svg><use href="#i-search"/></svg>
+            <input class="input" type="search" placeholder="在当前列表中筛选…" oninput="filterTable(this)">
+        </div>
+        {% endif %}
+    </div>
+
+    {% if recs %}
+    {% set cols = column_defs.get(rtype, recs[0].keys()|list) %}
+    <div class="card-body" style="padding:0;">
+        <div class="table-wrap" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                    {% for key in cols %}
+                        <th>{{ header_labels.get(key, key) }}</th>
+                    {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                {% for rec in recs[:200] %}
+                    <tr data-search="{{ rec|string|lower }}">
+                    {% for key in cols %}
+                        {% set val = rec.get(key, '') %}
+                        {% if key == 'status' and val is number %}
+                        <td><span class="{{ 'alive' if val < 400 else 'dead' }}">{{ val }}</span></td>
+                        {% elif key in ('url', 'data', 'ip', 'domain', 'banner') %}
+                        <td class="mono cell-wrap">{{ val }}</td>
+                        {% elif key == 'port' %}
+                        <td><span class="badge">{{ val }}</span></td>
+                        {% else %}
+                        <td>{{ val }}</td>
+                        {% endif %}
+                    {% endfor %}
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if recs|length > 200 %}
+        <div class="hint" style="padding:12px 18px;">
+            当前展示前 200 条，还有 {{ recs|length - 200 }} 条未显示，请导出 Excel 查看完整数据。
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty">
+        <span class="empty-icon"><svg><use href="#i-inbox"/></svg></span>
+        <strong>未找到{{ type_labels.get(rtype, rtype) }}</strong>
+        <span>该阶段没有产出记录，或目标条件未命中。</span>
+    </div>
+    {% endif %}
+</section>
+{% endfor %}
+
+{% for rtype, recs in records.items() if rtype not in type_order and recs %}
+<section class="card" id="sec-{{ rtype }}" style="margin-top:20px;">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title">{{ rtype }} <span class="badge badge-accent">{{ recs|length }}</span></h2>
+        </div>
+        {% if recs %}
+        <div class="search-box" style="max-width:260px;">
+            <svg><use href="#i-search"/></svg>
+            <input class="input" type="search" placeholder="在当前列表中筛选…" oninput="filterTable(this)">
+        </div>
+        {% endif %}
+    </div>
+    {% if recs %}
+    {% set cols = recs[0].keys()|list %}
+    <div class="card-body" style="padding:0;">
+        <div class="table-wrap" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+            <table class="data-table">
+                <thead>
+                    <tr>{% for key in cols %}<th>{{ header_labels.get(key, key) }}</th>{% endfor %}</tr>
+                </thead>
+                <tbody>
+                {% for rec in recs[:200] %}
+                    <tr data-search="{{ rec|string|lower }}">
+                    {% for key in cols %}<td>{{ rec.get(key, '') }}</td>{% endfor %}
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</section>
+{% endfor %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function filterTable(input) {
+    var card = input.closest('.card');
+    var query = input.value.trim().toLowerCase();
+    var rows = card.querySelectorAll('tbody tr');
+    var visible = 0;
+    rows.forEach(function (row) {
+        var hit = !query || (row.getAttribute('data-search') || '').indexOf(query) !== -1;
+        row.style.display = hit ? '' : 'none';
+        if (hit) visible++;
+    });
+    var hint = card.querySelector('.filter-hint');
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'hint filter-hint';
+        hint.style.padding = '10px 18px';
+        var body = card.querySelector('.card-body');
+        if (body) body.appendChild(hint);
+    }
+    hint.textContent = query
+        ? '筛选到 ' + visible + ' / ' + rows.length + ' 条记录'
+        : '';
+}
+</script>
+{% endblock %}

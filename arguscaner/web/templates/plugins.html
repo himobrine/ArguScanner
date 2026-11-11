@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}插件 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Plugin Registry</div>
+        <h1 class="page-title">插件</h1>
+        <p class="page-sub">管理内置与自定义扫描插件。自定义插件通过 YAML 命令模板声明，启用状态即时生效。</p>
+    </div>
+    <div class="page-actions">
+        <a class="btn" href="/pipeline">
+            <svg><use href="#i-flow"/></svg>查看流程
+        </a>
+    </div>
+</div>
+
+<div class="stat-grid" style="margin-bottom:20px;">
+    <div class="stat accent">
+        <div class="stat-value">{{ plugins|length }}</div>
+        <div class="stat-label">已注册插件</div>
+    </div>
+    <div class="stat success">
+        <div class="stat-value">{{ plugins|selectattr('enabled')|list|length }}</div>
+        <div class="stat-label">已启用</div>
+    </div>
+    <div class="stat purple">
+        <div class="stat-value">{{ plugins|selectattr('source', 'equalto', 'custom')|list|length }}</div>
+        <div class="stat-label">自定义插件</div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <section class="card">
+        <div class="card-head">
+            <div>
+                <h2 class="card-title"><svg><use href="#i-plug"/></svg>已注册插件</h2>
+                <p class="card-sub">切换开关可即时启用或禁用插件；内置插件不可删除。</p>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0;">
+            <div class="table-wrap" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+                <table class="data-table" id="plugin-table">
+                    <thead>
+                        <tr>
+                            <th>名称</th>
+                            <th>描述</th>
+                            <th>支持类型</th>
+                            <th>来源</th>
+                            <th>工具</th>
+                            <th>启用</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in plugins %}
+                        <tr data-source="{{ p.source }}">
+                            <td>
+                                <strong>{{ p.name }}</strong>
+                                {% if p.version %}<div class="tiny dim mono">v{{ p.version }}</div>{% endif %}
+                            </td>
+                            <td>{{ p.description }}</td>
+                            <td>
+                                {% for t in p.supported_target_types %}
+                                <span class="badge">{{ t }}</span>
+                                {% else %}
+                                <span class="badge">all</span>
+                                {% endfor %}
+                            </td>
+                            <td>
+                                {% if p.source == 'custom' %}
+                                <span class="source-custom">自定义</span>
+                                {% else %}
+                                <span class="source-builtin">内置</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% set plugin_tools = tools_by_plugin.get(p.name, []) %}
+                                {% if plugin_tools %}
+                                <div class="plugin-tools">
+                                    {% for t in plugin_tools %}
+                                    <span class="badge {{ 'badge-success' if t.exists else 'badge-danger' }}"
+                                          title="{{ t.path }}">
+                                        {{ t.label }} · {{ t.source_label }}
+                                    </span>
+                                    {% endfor %}
+                                </div>
+                                <a class="tiny" href="/settings#sec-plugins-{{ p.name }}">配置路径</a>
+                                {% else %}
+                                <span class="dim tiny">—</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <label class="toggle" title="{{ '禁用' if p.enabled else '启用' }}">
+                                    <input type="checkbox" data-plugin="{{ p.name }}"
+                                           {{ 'checked' if p.enabled }}
+                                           onchange="togglePlugin('{{ p.name }}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </td>
+                            <td>
+                                {% if p.source == 'custom' %}
+                                <button class="btn btn-danger" onclick="removePlugin('{{ p.name }}')">删除</button>
+                                {% else %}
+                                <span class="dim tiny">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="card-head">
+            <div>
+                <h2 class="card-title"><svg><use href="#i-plus"/></svg>添加自定义插件</h2>
+                <p class="card-sub">命令模板支持 <span class="mono">{{ '{{target}}' }}</span> 与 <span class="mono">{{ '{{output}}' }}</span> 占位符。</p>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="form-grid">
+                <div class="field">
+                    <label class="label" for="add-name">名称 <span class="req">*</span></label>
+                    <input class="input" type="text" id="add-name" placeholder="my_scanner">
+                </div>
+                <div class="field">
+                    <label class="label" for="add-desc">描述</label>
+                    <input class="input" type="text" id="add-desc" placeholder="我的自定义扫描插件">
+                </div>
+                <div class="field span-2">
+                    <label class="label" for="add-cmd">命令模板 <span class="req">*</span></label>
+                    <input class="input mono" type="text" id="add-cmd" placeholder="my_scanner --target {{ '{{target}}' }} --output {{ '{{output}}' }}">
+                </div>
+                <div class="field">
+                    <label class="label" for="add-types">支持类型</label>
+                    <input class="input" type="text" id="add-types" placeholder="domain,ip（留空=全部）">
+                </div>
+                <div class="field">
+                    <label class="label" for="add-schema">输出格式 (JSON)</label>
+                    <input class="input mono" type="text" id="add-schema" placeholder='{"domain":"str","ip":"str"}'>
+                </div>
+                <div class="span-2 row" style="justify-content:flex-end;">
+                    <button class="btn btn-primary" onclick="addPlugin()">
+                        <svg><use href="#i-plus"/></svg>添加插件
+                    </button>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function addPlugin() {
+    var name = document.getElementById('add-name').value.trim();
+    var desc = document.getElementById('add-desc').value.trim();
+    var cmd = document.getElementById('add-cmd').value.trim();
+    var types = document.getElementById('add-types').value.trim();
+    var schema = document.getElementById('add-schema').value.trim();
+
+    if (!name || !cmd) {
+        showMsg('名称和命令模板为必填项。', true);
+        return;
+    }
+
+    var payload = {
+        name: name,
+        description: desc || '自定义插件：' + name,
+        command_template: cmd,
+        supported_target_types: types ? types.split(',').map(function (t) { return t.trim(); }) : [],
+        output_schema: {}
+    };
+    if (schema) {
+        try {
+            payload.output_schema = JSON.parse(schema);
+        } catch (e) {
+            showMsg('输出格式不是合法 JSON：' + e.message, true);
+            return;
+        }
+    }
+
+    fetch('/api/plugins', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                showMsg(data.error, true);
+            } else {
+                showMsg('插件 "' + name + '" 已添加。', false);
+                setTimeout(function () { location.reload(); }, 600);
+            }
+        })
+        .catch(function (e) { showMsg('添加失败：' + e.message, true); });
+}
+
+function removePlugin(name) {
+    if (!confirm('确认删除插件 "' + name + '"？')) return;
+    fetch('/api/plugins/' + encodeURIComponent(name), {method: 'DELETE'})
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                showMsg(data.error, true);
+            } else {
+                showMsg('插件 "' + name + '" 已删除。', false);
+                var rows = document.querySelectorAll('#plugin-table tbody tr');
+                rows.forEach(function (row) {
+                    var cell = row.querySelector('strong');
+                    if (cell && cell.textContent === name) row.remove();
+                });
+            }
+        })
+        .catch(function (e) { showMsg('删除失败：' + e.message, true); });
+}
+
+function togglePlugin(name, enabled) {
+    fetch('/api/plugins/' + encodeURIComponent(name) + '/status', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: enabled})
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                showMsg(data.error, true);
+            } else {
+                showMsg(name + (enabled ? ' 已启用' : ' 已禁用'), false);
+            }
+        })
+        .catch(function (e) { showMsg('操作失败：' + e.message, true); });
+}
+
+function showMsg(text, isError) {
+    showToast(text, isError ? 'error' : 'success');
+}
+</script>
+{% endblock %}

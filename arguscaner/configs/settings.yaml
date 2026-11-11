@@ -1,0 +1,129 @@
+defaults:
+  concurrency: 100
+  timeout: 999
+plugins:
+  oneforall:
+    enabled: true
+    oneforall_path: D:\tools\OneForAll-master\oneforall.py
+  httpx_probe:
+    enabled: true
+    httpx_path: ''
+    max_hosts: 5000
+    threads: 0
+    rate_limit: 0
+    extra_args: []
+  nmap_scan:
+    enabled: true
+    nmap_path: ''
+    ports: '-'
+    timing: ''
+    min_rate: 1000
+    extra_args: []
+  jsfinder:
+    enabled: true
+    jsfinder_path: D:\tools\JSFinder-master\JSFinder-master\JSFinder.py
+    timeout: 300
+    retry: 2
+    retry_delay: 5
+    max_targets: 50
+  urlfinder:
+    enabled: true
+    urlfinder_path: ''
+    timeout: 300
+    retry: 2
+    retry_delay: 5
+    max_targets: 50
+  ip_discovery:
+    enabled: true
+    dns_workers: 20
+    dns_timeout: 5
+    expand_cidr: false
+    max_cidr_hosts: 256
+    max_hosts: 5000
+  api_probe:
+    enabled: true
+    httpx_path: ''
+    threads: 10
+    timeout: 10
+    rate_limit: 20
+    max_origins: 100
+    max_paths: 80
+    include_scheme_fallback: true
+    wordlist: wordlists/api_paths.txt
+recursive:
+  enabled: true
+  max_rounds: 5
+  max_assets_per_round: 1000
+  max_ips_per_round: 1024
+  ip_cache_scope: task
+  skip_scanned_ips: true
+  rescan_ips: false
+rate_limiter:
+  rps_limit: 100
+  burst_limit: 20
+retry:
+  max_attempts: 3
+  backoff_seconds: 30
+  retryable_exit_codes:
+  - 1
+  - 2
+  - 137
+  non_retryable_exit_codes:
+  - 0
+  - 127
+waf_aware:
+  enabled: true
+  auto_recover: true
+  trigger_status_codes:
+  - 403
+  - 429
+  - 503
+  trigger_response_keywords:
+  - access denied
+  - blocked
+  - captcha
+  - waf
+  post_scan_retry:
+    mode: auto
+    max_retry_attempts: 2
+    retry_interval_seconds: 60
+  recovery:
+    initial_wait_seconds: 60
+    max_wait_seconds: 3600
+    backoff_multiplier: 2
+    proxy_pool:
+      enabled: true
+      sources: []
+      rotate_on_trigger: true
+      max_rotate_attempts: 5
+      fallback_on_exhaustion: enter_wait
+test:
+  default_target: example.com
+  verbose_by_default: false
+  mock_waf_enabled: false
+  output_dir: workspace/test_outputs
+  warn_on_output_exceed: true
+  exceed_ratio_threshold: 1.5
+output:
+  excel:
+    enabled: true
+    file_name: report_{task_id}.xlsx
+    dedup_strategy: global
+    sheets:
+    - 概览
+    - 子域名
+    - 存活URL
+    - 开放端口
+    - 指纹
+    - 漏洞
+    - 中断
+    - JS URLs
+    - JS Subdomains
+    - IP映射
+    - API端点
+    chunk_size: 50000
+    max_rows_per_sheet: 1048000
+  html:
+    enabled: true
+  json:
+    enabled: false

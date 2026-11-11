@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}历史任务 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Task Archive</div>
+        <h1 class="page-title">历史任务</h1>
+        <p class="page-sub">查看全部扫描任务的进度与结果，支持按状态筛选、关键词搜索和定时刷新。</p>
+    </div>
+    <div class="page-actions">
+        <a class="btn btn-primary" href="/">
+            <svg><use href="#i-plus"/></svg>新建扫描
+        </a>
+    </div>
+</div>
+
+<div class="stat-grid" style="margin-bottom:20px;">
+    <div class="stat accent">
+        <div class="stat-value" id="stat-all">0</div>
+        <div class="stat-label">全部任务</div>
+    </div>
+    <div class="stat success">
+        <div class="stat-value" id="stat-done">0</div>
+        <div class="stat-label">已完成</div>
+    </div>
+    <div class="stat warning">
+        <div class="stat-value" id="stat-running">0</div>
+        <div class="stat-label">运行中</div>
+    </div>
+    <div class="stat danger">
+        <div class="stat-value" id="stat-failed">0</div>
+        <div class="stat-label">失败</div>
+    </div>
+</div>
+
+<div class="filter-bar">
+    <div class="segmented" id="status-filters">
+        <button type="button" class="btn btn-sm active" data-filter="all" onclick="filterTasks('all', this)">全部</button>
+        <button type="button" class="btn btn-sm" data-filter="done" onclick="filterTasks('done', this)">已完成</button>
+        <button type="button" class="btn btn-sm" data-filter="running" onclick="filterTasks('running', this)">运行中</button>
+        <button type="button" class="btn btn-sm" data-filter="failed" onclick="filterTasks('failed', this)">失败</button>
+        <button type="button" class="btn btn-sm" data-filter="pending" onclick="filterTasks('pending', this)">等待中</button>
+    </div>
+    <div class="search-box">
+        <svg><use href="#i-search"/></svg>
+        <input class="input" id="history-search" type="search" placeholder="搜索任务 ID 或目标…" oninput="renderTable()">
+    </div>
+    <div class="refresh-control">
+        <label for="refresh-interval">刷新</label>
+        <select class="input" id="refresh-interval" onchange="setRefreshInterval(this.value)">
+            <option value="0">关闭</option>
+            <option value="5">5 秒</option>
+            <option value="10" selected>10 秒</option>
+            <option value="30">30 秒</option>
+            <option value="60">60 秒</option>
+        </select>
+    </div>
+</div>
+
+<section class="card">
+    <div id="history-table-wrap">
+        <div class="table-wrap" style="border:0;border-radius:var(--radius-lg);">
+            <table class="data-table" id="history-table">
+                <thead>
+                    <tr>
+                        <th>任务</th>
+                        <th>目标</th>
+                        <th class="hide-md">类型</th>
+                        <th>状态</th>
+                        <th>阶段进度</th>
+                        <th class="hide-lg">启动时间</th>
+                        <th class="hide-md">轮次</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="history-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="empty" id="history-empty" style="display:none;">
+        <span class="empty-icon"><svg><use href="#i-inbox"/></svg></span>
+        <strong id="history-empty-title">暂无历史任务</strong>
+        <span id="history-empty-sub">从新建扫描开始，任务会自动出现在这里。</span>
+    </div>
+</section>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var allTasks = [];
+var currentFilter = 'all';
+var refreshTimer = null;
+var TOTAL_STAGES = 6;
+var STATUS_LABELS = {done: '已完成', running: '运行中', failed: '失败', pending: '等待中', unknown: '未知'};
+
+function loadHistory() {
+    fetch('/api/history')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            allTasks = Array.isArray(data) ? data : [];
+            updateStats();
+            renderTable();
+        })
+        .catch(function (err) {
+            showToast('加载历史任务失败：' + err.message, 'error');
+            document.getElementById('history-empty-title').textContent = '加载失败';
+            document.getElementById('history-empty-sub').textContent = err.message;
+            document.getElementById('history-empty').style.display = '';
+            document.getElementById('history-table-wrap').style.display = 'none';
+        });
+}
+
+function updateStats() {
+    var counts = {all: allTasks.length, done: 0, running: 0, failed: 0, pending: 0};
+    allTasks.forEach(function (t) {
+        if (counts[t.status] === undefined) counts[t.status] = 0;
+        counts[t.status]++;
+    });
+    document.getElementById('stat-all').textContent = counts.all;
+    document.getElementById('stat-done').textContent = counts.done;
+    document.getElementById('stat-running').textContent = counts.running;
+    document.getElementById('stat-failed').textContent = counts.failed;
+    document.querySelectorAll('#status-filters [data-filter]').forEach(function (btn) {
+        var f = btn.getAttribute('data-filter');
+        btn.textContent = ({
+            all: '全部', done: '已完成', running: '运行中',
+            failed: '失败', pending: '等待中'
+        })[f] + (counts[f] ? ' · ' + counts[f] : '');
+    });
+}
+
+function filterTasks(filter, btn) {
+    currentFilter = filter;
+    document.querySelectorAll('#status-filters .btn').forEach(function (b) {
+        b.classList.remove('active');
+    });
+    if (btn) btn.classList.add('active');
+    renderTable();
+}
+
+function setRefreshInterval(seconds) {
+    try { localStorage.setItem('historyRefreshInterval', seconds); } catch (e) { /* ignore */ }
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = null;
+    if (Number(seconds) > 0) {
+        refreshTimer = setInterval(loadHistory, Number(seconds) * 1000);
+    }
+}
+
+function formatTime(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    var n = Number(value);
+    var d;
+    if (!isNaN(n) && n > 0) {
+        d = new Date(n > 1e12 ? n : n * 1000);
+    } else {
+        d = new Date(value);
+    }
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleString('zh-CN', {hour12: false});
+}
+
+function renderTable() {
+    var query = (document.getElementById('history-search').value || '').trim().toLowerCase();
+    var filtered = allTasks.filter(function (t) {
+        if (currentFilter !== 'all' && t.status !== currentFilter) return false;
+        if (!query) return true;
+        return ((t.task_id || '') + ' ' + (t.target || '') + ' ' + (t.target_type || ''))
+            .toLowerCase().indexOf(query) !== -1;
+    });
+
+    var tbody = document.getElementById('history-tbody');
+    var empty = document.getElementById('history-empty');
+    var wrap = document.getElementById('history-table-wrap');
+    tbody.innerHTML = '';
+
+    if (!filtered.length) {
+        wrap.style.display = 'none';
+        empty.style.display = '';
+        var hasQuery = query || currentFilter !== 'all';
+        document.getElementById('history-empty-title').textContent =
+            hasQuery ? '没有匹配的任务' : (allTasks.length ? '暂无该状态的任务' : '暂无历史任务');
+        document.getElementById('history-empty-sub').textContent =
+            hasQuery ? '尝试清除搜索或切换筛选条件。' : '从新建扫描开始，任务会自动出现在这里。';
+        return;
+    }
+
+    wrap.style.display = '';
+    empty.style.display = 'none';
+
+    filtered.forEach(function (t) {
+        var states = t.stage_states || {};
+        var doneCount = Object.keys(states).filter(function (k) {
+            return states[k] === 'done' || states[k] === 'skipped';
+        }).length;
+        var pct = Math.min(100, Math.round(doneCount / TOTAL_STAGES * 100));
+        var rounds = t.recursive_rounds || 0;
+        var isFailed = t.status === 'failed';
+        var action = t.status === 'done'
+            ? '<a class="btn btn-sm btn-primary" href="/results/' + encodeURIComponent(t.task_id) + '">查看结果</a>'
+            : '<a class="btn btn-sm" href="/status/' + encodeURIComponent(t.task_id) + '">查看进度</a>';
+
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-status', t.status || 'unknown');
+        tr.innerHTML =
+            '<td><a class="mono result-id" href="/status/' + encodeURIComponent(t.task_id) + '">' +
+                escapeHtml(t.task_id) + '</a></td>' +
+            '<td><strong class="truncate" title="' + escapeHtml(t.target || '') + '">' +
+                escapeHtml(t.target || '—') + '</strong></td>' +
+            '<td class="hide-md"><span class="badge">' + escapeHtml(t.target_type || '—') + '</span></td>' +
+            '<td><span class="pill pill-' + escapeHtml(t.status || 'pending') + '">' +
+                escapeHtml(STATUS_LABELS[t.status] || t.status || '未知') + '</span></td>' +
+            '<td style="min-width:110px;">' +
+                '<div class="row" style="gap:7px;">' +
+                '<div class="progress-bar" style="flex:1;min-width:50px;height:6px;">' +
+                '<div class="progress-fill ' + (isFailed ? 'progress-done' : '') + '" style="width:' + pct + '%;' +
+                (isFailed ? 'background:var(--danger);' : '') + '"></div></div>' +
+                '<span class="tiny dim nowrap">' + doneCount + '/' + TOTAL_STAGES + '</span></div></td>' +
+            '<td class="hide-lg nowrap">' + escapeHtml(formatTime(t.started_at)) + '</td>' +
+            '<td class="hide-md">' + (rounds ? '<span class="badge badge-purple">' + rounds + ' 轮</span>' : '<span class="dim">—</span>') + '</td>' +
+            '<td><div class="actions">' + action + '</div></td>';
+        tbody.appendChild(tr);
+    });
+}
+
+var saved = null;
+try { saved = localStorage.getItem('historyRefreshInterval'); } catch (e) { /* ignore */ }
+if (saved === null) saved = '10';
+document.getElementById('refresh-interval').value = saved;
+loadHistory();
+setRefreshInterval(parseInt(saved, 10) || 0);
+</script>
+{% endblock %}

@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}代理池 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Proxy Pool</div>
+        <h1 class="page-title">代理池</h1>
+        <p class="page-sub">维护 WAF 规避阶段可用的代理源。添加后立即写入 <span class="mono">settings.yaml</span>。</p>
+    </div>
+</div>
+
+<div class="stat-grid" style="margin-bottom:20px;">
+    <div class="stat accent">
+        <div class="stat-value" id="proxy-count">{{ sources|length }}</div>
+        <div class="stat-label">代理源数量</div>
+    </div>
+</div>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title"><svg><use href="#i-plus"/></svg>添加代理</h2>
+            <p class="card-sub">支持 http / https / socks5 代理 URL。</p>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="row" style="align-items:stretch;">
+            <input class="input mono" type="text" id="proxy-url" placeholder="http://127.0.0.1:8080"
+                   style="flex:1;min-width:220px;" onkeydown="if(event.key==='Enter'){addProxy();}">
+            <button class="btn btn-primary" type="button" onclick="addProxy()">
+                <svg><use href="#i-plus"/></svg>添加
+            </button>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title"><svg><use href="#i-globe"/></svg>代理源列表</h2>
+            <p class="card-sub">删除后立即从代理池移除。</p>
+        </div>
+        <button class="btn btn-sm" type="button" onclick="refreshList()">
+            <svg><use href="#i-refresh"/></svg>刷新
+        </button>
+    </div>
+    <div class="card-body" style="padding:0;{{ 'display:none;' if not sources }}" id="proxy-table-wrap">
+        <div class="table-wrap" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+            <table class="data-table" id="proxy-table">
+                <thead>
+                    <tr>
+                        <th>代理 URL</th>
+                        <th style="width:120px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for src in sources %}
+                    <tr>
+                        <td class="mono">{{ src }}</td>
+                        <td><button class="btn btn-danger" type="button" onclick="removeProxy(this)" data-url="{{ src }}">删除</button></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="empty" id="proxy-empty" style="display:{{ 'none' if sources else 'flex' }};">
+        <span class="empty-icon"><svg><use href="#i-globe"/></svg></span>
+        <strong>代理池为空</strong>
+        <span>添加一个代理 URL 后，会在 WAF 规避阶段自动使用。</span>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function refreshList() {
+    fetch('/api/proxy')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var tbody = document.querySelector('#proxy-table tbody');
+            tbody.innerHTML = '';
+            var sources = data.sources || [];
+            sources.forEach(function (url) {
+                var tr = document.createElement('tr');
+                var urlCell = document.createElement('td');
+                urlCell.className = 'mono';
+                urlCell.textContent = url;
+                var actionCell = document.createElement('td');
+                var btn = document.createElement('button');
+                btn.className = 'btn btn-danger';
+                btn.type = 'button';
+                btn.textContent = '删除';
+                btn.setAttribute('data-url', url);
+                btn.addEventListener('click', function () { removeProxy(btn); });
+                actionCell.appendChild(btn);
+                tr.appendChild(urlCell);
+                tr.appendChild(actionCell);
+                tbody.appendChild(tr);
+            });
+            document.getElementById('proxy-count').textContent = sources.length;
+            document.getElementById('proxy-empty').style.display = sources.length ? 'none' : 'flex';
+            document.getElementById('proxy-table-wrap').style.display = sources.length ? '' : 'none';
+        })
+        .catch(function (err) {
+            showToast('加载代理列表失败：' + err.message, 'error');
+        });
+}
+
+function addProxy() {
+    var input = document.getElementById('proxy-url');
+    var url = input.value.trim();
+    if (!url) {
+        showToast('请输入代理 URL', 'error');
+        input.focus();
+        return;
+    }
+    fetch('/api/proxy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url})
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                showMsg(data.error, true);
+            } else {
+                input.value = '';
+                showMsg('代理已添加。', false);
+                refreshList();
+            }
+        })
+        .catch(function (err) { showMsg('添加失败：' + err.message, true); });
+}
+
+function removeProxy(source) {
+    var url = typeof source === 'string'
+        ? source
+        : source.getAttribute('data-url');
+    if (!url) return;
+    fetch('/api/proxy', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url})
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                showMsg(data.error, true);
+            } else {
+                showMsg('代理已删除。', false);
+                refreshList();
+            }
+        })
+        .catch(function (err) { showMsg('删除失败：' + err.message, true); });
+}
+
+function showMsg(text, isError) {
+    showToast(text, isError ? 'error' : 'success');
+}
+</script>
+{% endblock %}

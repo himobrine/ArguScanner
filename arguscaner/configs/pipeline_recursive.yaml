@@ -1,0 +1,89 @@
+pipeline:
+  name: recursive_round
+  description: 递归轮次流程：IP 探测 → HTTP/端口 → JS/URL/API 发现
+  version: 2
+
+stages:
+  - id: ip_discovery
+    plugin: ip_discovery
+    label: 本轮 IP 解析
+    level: 1
+    depends_on: []
+    after: []
+    description: 解析本轮主机到 IP
+    when: {}
+    inputs:
+      - from: round_targets
+        data: host
+    outputs:
+      data: ip
+
+  - id: http_probe
+    plugin: httpx_probe
+    label: HTTP 存活探测
+    level: 2
+    depends_on: []
+    after: [ip_discovery]
+    description: httpx HTTP 存活检测（仅本轮新主机）
+    when: {}
+    inputs:
+      - from: round_targets
+        data: host
+    outputs:
+      data: url
+
+  - id: port_scan
+    plugin: nmap_scan
+    label: 端口扫描
+    level: 2
+    depends_on: []
+    after: [ip_discovery]
+    description: Nmap 端口扫描（已扫描 IP 自动跳过）
+    when: {}
+    inputs:
+      - from: ip_discovery
+        data: ip
+    outputs:
+      data: port
+
+  - id: js_url_extract
+    plugin: jsfinder
+    label: JS 链接提取
+    level: 3
+    depends_on: [http_probe]
+    after: []
+    description: JSFinder 提取 JS 中的 URL/子域名
+    when: {}
+    inputs:
+      - from: http_probe
+        data: url
+    outputs:
+      data: js_url
+
+  - id: urlfinder_extract
+    plugin: urlfinder
+    label: URL 深度提取
+    level: 3
+    depends_on: [http_probe]
+    after: []
+    description: URLFinder 提取页面 URL/JS
+    when: {}
+    inputs:
+      - from: http_probe
+        data: url
+    outputs:
+      data: url
+
+  - id: api_probe
+    plugin: api_probe
+    label: API 端点探测
+    level: 3
+    depends_on: [http_probe]
+    after: []
+    description: API 端点探测（仅本轮新 origin）
+    when: {}
+    inputs:
+      - from: http_probe
+        data: url
+    outputs:
+      data: api

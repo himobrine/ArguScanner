@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block title %}任务 {{ task_id }} · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Task Monitor</div>
+        <h1 class="page-title">任务状态</h1>
+        <p class="page-sub">
+            任务 <span class="mono result-id">{{ task_id }}</span>
+            <span id="target-line" class="dim"></span>
+            <span id="pipeline-name" class="dim"></span>
+        </p>
+    </div>
+    <div class="page-actions">
+        <span id="status-pill" class="pill pill-pending">加载中</span>
+        <a class="btn" href="/history">
+            <svg><use href="#i-history"/></svg>历史任务
+        </a>
+        <a class="btn btn-primary" id="results-link" href="/results/{{ task_id }}">
+            <svg><use href="#i-download"/></svg>查看结果
+        </a>
+    </div>
+</div>
+
+<div class="stat-grid" style="margin-bottom:20px;">
+    <div class="stat accent">
+        <div class="stat-value" id="stat-done">—</div>
+        <div class="stat-label">已完成阶段</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value" id="stat-stages">6</div>
+        <div class="stat-label">阶段总数</div>
+    </div>
+    <div class="stat purple">
+        <div class="stat-value" id="stat-rounds">0</div>
+        <div class="stat-label">递归轮次</div>
+    </div>
+    <div class="stat warning">
+        <div class="stat-value" id="stat-failed">0</div>
+        <div class="stat-label">失败阶段</div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <section class="card">
+        <div class="card-head">
+            <div>
+                <h2 class="card-title"><svg><use href="#i-flow"/></svg>阶段进度</h2>
+                <p class="card-sub">当前扫描在第一轮流水线中的执行情况。</p>
+            </div>
+            <span class="badge" id="stage-count">0 / 6</span>
+        </div>
+        <div class="card-body">
+            <div class="stage-list" id="stage-list">
+                <div class="empty"><strong>加载中…</strong></div>
+            </div>
+        </div>
+    </section>
+
+    <aside class="stack">
+        <section class="card" id="nmap-card" style="display:none;">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title"><svg><use href="#i-radar"/></svg>端口扫描</h2>
+                    <p class="card-sub" id="nmap-target">—</p>
+                </div>
+                <span class="badge badge-info" id="nmap-elapsed">—</span>
+            </div>
+            <div class="card-body">
+                <div class="progress-bar">
+                    <div id="nmap-bar" class="progress-fill progress-indeterminate"></div>
+                </div>
+                <div class="progress-task" id="nmap-task">等待 nmap 输出…</div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title"><svg><use href="#i-refresh"/></svg>递归轮次</h2>
+                    <p class="card-sub">发现新资产后自动进入下一轮。</p>
+                </div>
+                <span class="badge badge-purple" id="round-count">0 轮</span>
+            </div>
+            <div class="card-body" id="rounds-body">
+                <div class="empty">
+                    <span class="empty-icon"><svg><use href="#i-inbox"/></svg></span>
+                    <strong>暂无递归轮次</strong>
+                    <span>未启用递归，或尚未进入第二轮。</span>
+                </div>
+            </div>
+        </section>
+    </aside>
+</div>
+
+<section class="card" style="margin-top:20px;">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title"><svg><use href="#i-terminal"/></svg>运行日志</h2>
+            <p class="card-sub">每 3 秒自动刷新，任务结束后停止轮询。</p>
+        </div>
+        <div class="row">
+            <label class="tiny dim row" style="gap:6px;cursor:pointer;">
+                <input type="checkbox" id="autoscroll" checked> 自动滚动
+            </label>
+            <button class="btn btn-sm" type="button" onclick="refresh()">
+                <svg><use href="#i-refresh"/></svg>刷新
+            </button>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <div class="terminal" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+            <div class="terminal-bar">
+                <span class="terminal-dots"><i></i><i></i><i></i></span>
+                <span class="terminal-title">logs / {{ task_id }}</span>
+                <span class="terminal-tools"><span id="log-count">0 行</span></span>
+            </div>
+            <pre id="logs">加载中…</pre>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var taskId = {{ task_id | tojson }};
+var DEFAULT_STAGE_ORDER = [
+    'subdomain_enum', 'http_probe', 'port_scan',
+    'js_url_extract', 'urlfinder_extract', 'api_probe'
+];
+var DEFAULT_STAGE_LABELS = {
+    subdomain_enum: '子域名枚举',
+    http_probe: 'HTTP 存活探测',
+    port_scan: '端口扫描',
+    js_url_extract: 'JS 链接提取',
+    urlfinder_extract: 'URL 深度提取',
+    api_probe: 'API 端点探测'
+};
+var stageOrder = DEFAULT_STAGE_ORDER.slice();
+var stageLabels = Object.assign({}, DEFAULT_STAGE_LABELS);
+
+function applyPipelineStages(data) {
+    var stages = data.pipeline_stages || [];
+    if (!stages.length) return;
+    stageOrder = stages.map(function (stage) { return stage.id; }).filter(Boolean);
+    stageLabels = {};
+    stages.forEach(function (stage) {
+        if (!stage.id) return;
+        stageLabels[stage.id] = stage.label || stage.id;
+    });
+    var nameEl = document.getElementById('pipeline-name');
+    if (nameEl) {
+        nameEl.textContent = data.pipeline ? ' · 流程 ' + data.pipeline : '';
+    }
+}
+
+var STATUS_LABELS = {
+    done: '已完成', running: '运行中', failed: '失败',
+    pending: '等待中', unknown: '未知'
+};
+var pollTimer = null;
+var stopped = false;
+
+function pillClass(status) {
+    if (status === 'done') return 'pill pill-done';
+    if (status === 'running') return 'pill pill-running';
+    if (status === 'failed') return 'pill pill-failed';
+    return 'pill pill-pending';
+}
+
+function stageState(data, name) {
+    var states = data.stage_states || {};
+    if (states[name]) return states[name];
+    if ((data.stages_done || []).indexOf(name) >= 0) return 'done';
+    return null;
+}
+
+function stageIcon(state) {
+    if (state === 'done') return '#i-check';
+    if (state === 'failed') return '#i-x';
+    if (state === 'skipped') return '#i-arrow-right';
+    return null;
+}
+
+function renderStages(data) {
+    var html = '';
+    var doneCount = 0;
+    var failedCount = 0;
+    var pendingSeen = false;
+
+    stageOrder.forEach(function (name, index) {
+        var state = stageState(data, name);
+        if (state === 'done' || state === 'skipped') doneCount++;
+        if (state === 'failed') failedCount++;
+
+        var visual = state || 'pending';
+        if (!state && data.status === 'running' && !pendingSeen) {
+            visual = 'running';
+            pendingSeen = true;
+        } else if (!state) {
+            pendingSeen = true;
+        }
+
+        var icon = stageIcon(state);
+        var badge = '';
+        if (visual === 'done') badge = '<span class="badge badge-success">完成</span>';
+        else if (visual === 'skipped') badge = '<span class="badge">跳过</span>';
+        else if (visual === 'failed') badge = '<span class="badge badge-danger">失败</span>';
+        else if (visual === 'running') badge = '<span class="badge badge-info">进行中</span>';
+        else badge = '<span class="badge">等待</span>';
+
+        html += '<div class="stage-item ' + visual + '">' +
+            '<span class="stage-dot">' +
+            (icon ? '<svg><use href="' + icon + '"/></svg>' : (index + 1)) +
+            '</span>' +
+            '<div>' +
+            '<div class="stage-name">' + escapeHtml(stageLabels[name] || name) + '</div>' +
+            '<div class="tiny dim mono">' + escapeHtml(name) + '</div>' +
+            '</div>' +
+            '<div class="stage-meta">' + badge + '</div>' +
+            '</div>';
+    });
+
+    document.getElementById('stage-list').innerHTML = html;
+    document.getElementById('stage-count').textContent = doneCount + ' / ' + stageOrder.length;
+    document.getElementById('stat-done').textContent = doneCount;
+    document.getElementById('stat-stages').textContent = stageOrder.length;
+    document.getElementById('stat-failed').textContent = failedCount;
+    return failedCount;
+}
+
+function renderRounds(data) {
+    var rounds = data.recursive_rounds || [];
+    document.getElementById('stat-rounds').textContent = rounds.length;
+    document.getElementById('round-count').textContent = rounds.length + ' 轮';
+    var body = document.getElementById('rounds-body');
+
+    if (!rounds.length) {
+        body.innerHTML = '<div class="empty">' +
+            '<span class="empty-icon"><svg><use href="#i-inbox"/></svg></span>' +
+            '<strong>暂无递归轮次</strong>' +
+            '<span>未启用递归，或尚未进入第二轮。</span></div>';
+        return;
+    }
+
+    var html = '';
+    rounds.forEach(function (round) {
+        var stages = round.stage_states || {};
+        var badge = round.finished
+            ? '<span class="badge badge-success">已完成</span>'
+            : (round.running ? '<span class="badge badge-info">进行中</span>' : '<span class="badge">等待</span>');
+        var chips = '';
+        stageOrder.forEach(function (name) {
+            var state = stages[name];
+            var cls = 'badge';
+            if (state === 'done') cls += ' badge-success';
+            else if (state === 'failed') cls += ' badge-danger';
+            else if (state === 'skipped') cls += '';
+            chips += '<span class="' + cls + '">' +
+                escapeHtml(stageLabels[name] || name) + '</span>';
+        });
+
+        html += '<div class="round-card">' +
+            '<div class="round-head">' +
+            '<span class="round-title">' + escapeHtml(round.round || 'round') + '</span>' +
+            '<span class="badge badge-accent">' + (round.targets || 0) + ' 个目标</span>' +
+            '<span class="round-meta">' + badge + '</span>' +
+            '</div>' +
+            '<div class="round-stages">' + chips + '</div>' +
+            '</div>';
+    });
+    body.innerHTML = html;
+}
+
+function renderNmap(np) {
+    var card = document.getElementById('nmap-card');
+    if (!np) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = '';
+    document.getElementById('nmap-target').textContent = '目标：' + (np.target || '—');
+    document.getElementById('nmap-task').textContent =
+        np.status === 'done' ? '扫描完成' : (np.current_task || '扫描进行中…');
+    document.getElementById('nmap-elapsed').textContent = np.elapsed || '—';
+
+    var bar = document.getElementById('nmap-bar');
+    if (np.status === 'done') {
+        bar.className = 'progress-fill progress-done';
+        bar.style.width = '100%';
+    } else if (np.status === 'failed') {
+        bar.className = 'progress-fill';
+        bar.style.width = '100%';
+        bar.style.background = 'var(--danger)';
+    } else {
+        bar.className = 'progress-fill progress-indeterminate';
+        bar.style.width = '100%';
+        bar.style.background = '';
+    }
+}
+
+function refresh() {
+    fetch('/api/status/' + encodeURIComponent(taskId))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var pill = document.getElementById('status-pill');
+            pill.className = pillClass(data.status);
+            pill.textContent = STATUS_LABELS[data.status] || data.status || '未知';
+
+            var targetLine = document.getElementById('target-line');
+            if (data.target) {
+                targetLine.innerHTML = ' · 目标 <span class="mono">' + escapeHtml(data.target) + '</span>';
+            } else {
+                targetLine.textContent = '';
+            }
+
+            if (data.status === 'failed' && data.error) {
+                showToast('任务失败：' + data.error, 'error');
+            }
+
+            applyPipelineStages(data);
+            var failedCount = renderStages(data);
+            renderRounds(data);
+            renderNmap(data.nmap_progress);
+
+            if (data.status === 'done' || data.status === 'failed') {
+                stopPolling();
+            }
+        })
+        .catch(function (err) {
+            document.getElementById('stage-list').innerHTML =
+                '<div class="empty"><strong>加载状态失败</strong><span>' +
+                escapeHtml(err.message) + '</span></div>';
+        });
+
+    fetch('/api/logs/' + encodeURIComponent(taskId) + '?count=300')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var logs = data.logs || [];
+            var lines = logs.map(function (e) {
+                return '[' + (e.timestamp || '-') + '] ' +
+                    (e.event || '') + ' ' + (e.stage || '') + ' ' + (e.status || '');
+            });
+            var pre = document.getElementById('logs');
+            pre.textContent = lines.join('\n') || '暂无日志。';
+            document.getElementById('log-count').textContent = lines.length + ' 行';
+            if (document.getElementById('autoscroll').checked) {
+                pre.scrollTop = pre.scrollHeight;
+            }
+        })
+        .catch(function (err) {
+            document.getElementById('logs').textContent = '加载日志失败：' + err.message;
+        });
+}
+
+function stopPolling() {
+    if (stopped) return;
+    stopped = true;
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+refresh();
+pollTimer = setInterval(function () {
+    if (!stopped) refresh();
+}, 3000);
+</script>
+{% endblock %}

@@ -1,0 +1,474 @@
+{% extends "base.html" %}
+{% block title %}设置 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Configuration</div>
+        <h1 class="page-title">设置</h1>
+        <p class="page-sub">修改配置值并保存到 <span class="mono">settings.yaml</span>，保存后即时生效。支持按中文名称或配置键筛选。</p>
+    </div>
+    <div class="page-actions">
+        <div class="search-box" style="max-width:260px;">
+            <svg><use href="#i-search"/></svg>
+            <input class="input" id="settings-search" type="search" placeholder="筛选配置项…" oninput="filterSettings(this.value)">
+        </div>
+    </div>
+</div>
+
+<div class="section-nav" id="settings-nav"></div>
+<div id="settings-form"></div>
+<div id="msg"></div>
+
+<div class="save-bar" id="save-bar">
+    <span class="dirty" id="dirty-count">没有未保存的修改</span>
+    <button class="btn" type="button" onclick="location.reload()">重置</button>
+    <button class="btn btn-primary" type="button" id="save-btn" onclick="saveSettings()">
+        <span class="spinner"></span>
+        <span class="btn-label">保存全部</span>
+    </button>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var SCHEMA = {{ settings_schema | tojson }};
+var TOOLS = {{ tools | tojson }};
+var settings = {{ settings | tojson }};
+var ORDER = {{ settings_order | tojson }};
+
+var flatSettings = {};
+var sectionOrder = [];
+var pluginOrder = [];
+var changed = {};
+var toolByKey = {};
+
+TOOLS.forEach(function (tool) { toolByKey[tool.key] = tool; });
+
+/* ---------- helpers ---------- */
+function flatten(obj, prefix) {
+    for (var k in obj) {
+        var key = prefix ? prefix + '.' + k : k;
+        if (obj[k] && typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+            flatten(obj[k], key);
+        } else {
+            flatSettings[key] = obj[k];
+        }
+    }
+}
+
+function metaFor(key) {
+    if (SCHEMA.fields[key]) return SCHEMA.fields[key];
+    return {label: key.split('.').pop(), type: 'text'};
+}
+
+function sectionMeta(name) {
+    return SCHEMA.sections[name] || {label: name, description: ''};
+}
+
+function pluginMeta(name) {
+    return SCHEMA.plugins[name] || {label: name, description: ''};
+}
+
+function typeOf(key) {
+    var meta = metaFor(key);
+    if (meta.type) return meta.type;
+    var value = flatSettings[key];
+    if (typeof value === 'boolean') return 'bool';
+    if (typeof value === 'number') return 'number';
+    if (Array.isArray(value)) return 'array';
+    return 'text';
+}
+
+function arrayText(value) {
+    if (Array.isArray(value)) return value.join('\n');
+    if (value === null || value === undefined) return '';
+    return String(value);
+}
+
+function displayValue(value) {
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value) || (typeof value === 'object')) return JSON.stringify(value);
+    return String(value);
+}
+
+function searchText(key, meta, value) {
+    return [key, meta.label || '', meta.hint || '', displayValue(value)]
+        .join(' ').toLowerCase();
+}
+
+/* ---------- build sections ---------- */
+flatten(settings, '');
+for (var key in flatSettings) {
+    var sectionName = key.split('.')[0];
+    if (sectionOrder.indexOf(sectionName) < 0) sectionOrder.push(sectionName);
+    if (sectionName === 'plugins') {
+        var parts = key.split('.');
+        if (parts.length >= 3 && pluginOrder.indexOf(parts[1]) < 0) {
+            pluginOrder.push(parts[1]);
+        }
+    }
+}
+
+/* Keep YAML / registry order, then any extras. */
+function orderIndex(list, name) {
+    var index = list.indexOf(name);
+    return index < 0 ? 999 : index;
+}
+
+if (ORDER.sections && ORDER.sections.length) {
+    sectionOrder.sort(function (a, b) {
+        return orderIndex(ORDER.sections, a) - orderIndex(ORDER.sections, b);
+    });
+}
+
+var declaredPlugins = (ORDER.plugins && ORDER.plugins.length)
+    ? ORDER.plugins
+    : Object.keys(SCHEMA.plugins || {});
+pluginOrder.sort(function (a, b) {
+    return orderIndex(declaredPlugins, a) - orderIndex(declaredPlugins, b);
+});
+
+function pluginKeys(plugin) {
+    var prefix = 'plugins.' + plugin + '.';
+    return Object.keys(flatSettings).filter(function (key) {
+        return key.indexOf(prefix) === 0;
+    });
+}
+
+function keysOfSection(section) {
+    return Object.keys(flatSettings).filter(function (key) {
+        return key.split('.')[0] === section;
+    });
+}
+
+function toolStatusHtml(key, meta) {
+    var tool = meta.tool ? toolByKey[meta.tool] : null;
+    if (!tool) {
+        return '<div class="tool-status" data-field="' + escapeHtml(key) + '"></div>';
+    }
+    return '<div class="tool-status" data-field="' + escapeHtml(key) + '" data-tool="' +
+        escapeHtml(tool.key) + '">' + toolBadgeHtml(tool) + '</div>';
+}
+
+function toolBadgeHtml(tool) {
+    var cls = tool.exists ? 'badge badge-success' : 'badge badge-danger';
+    var label = tool.exists ? (tool.source_label || '可用') : '缺失';
+    return '<span class="' + cls + '">' + escapeHtml(label) + '</span>' +
+        '<span class="tool-path mono" title="' + escapeHtml(tool.path || '') + '">' +
+        escapeHtml(tool.path || '未解析到路径') + '</span>';
+}
+
+function controlHtml(key) {
+    var meta = metaFor(key);
+    var type = meta.type || typeOf(key);
+    var value = flatSettings[key];
+    var attrs = 'class="input" data-key="' + escapeHtml(key) + '" data-type="' +
+        escapeHtml(type) + '"';
+    if (meta.tool) attrs += ' data-tool="' + escapeHtml(meta.tool) + '"';
+
+    if (type === 'bool') {
+        return '<label class="switch setting-switch"><input type="checkbox" data-key="' +
+            escapeHtml(key) + '" data-type="bool" ' + (value ? 'checked' : '') +
+            '><span class="switch-track"></span></label>';
+    }
+    if (type === 'int' || type === 'float') {
+        var min = meta.min !== undefined ? ' min="' + meta.min + '"' : '';
+        var max = meta.max !== undefined ? ' max="' + meta.max + '"' : '';
+        var step = meta.step !== undefined ? meta.step : (type === 'int' ? 1 : 'any');
+        return '<input type="number" ' + attrs + min + max + ' step="' + step +
+            '" value="' + escapeHtml(displayValue(value)) + '">';
+    }
+    if (type === 'enum') {
+        var options = (meta.options || []).map(function (option) {
+            return '<option value="' + escapeHtml(option) + '"' +
+                (String(value) === String(option) ? ' selected' : '') + '>' +
+                escapeHtml(option) + '</option>';
+        }).join('');
+        return '<select ' + attrs + '>' + options + '</select>';
+    }
+    if (type === 'array') {
+        return '<textarea ' + attrs + ' rows="3" placeholder="每行一项">' +
+            escapeHtml(arrayText(value)) + '</textarea>';
+    }
+    if (type === 'path') {
+        var actions = '';
+        if (meta.tool) {
+            actions = '<div class="path-actions">' +
+                '<button class="btn btn-sm" type="button" onclick="checkTool(this)">检测</button>' +
+                '<button class="btn btn-sm" type="button" onclick="clearPath(this)">恢复默认</button>' +
+                toolStatusHtml(key, meta) +
+                '</div>';
+        }
+        return '<div class="path-control">' +
+            '<input type="text" ' + attrs + ' value="' + escapeHtml(displayValue(value)) +
+            '" placeholder="留空则自动探测 / 使用内置">' +
+            actions +
+            '<div class="path-result tiny dim"></div>' +
+            '</div>';
+    }
+    return '<input type="text" ' + attrs + ' value="' + escapeHtml(displayValue(value)) + '">';
+}
+
+function rowHtml(key) {
+    var meta = metaFor(key);
+    var value = flatSettings[key];
+    return '<div class="setting-row" data-key="' + escapeHtml(key) + '" data-search="' +
+        escapeHtml(searchText(key, meta, value)) + '">' +
+        '<div class="setting-key">' +
+        '<strong>' + escapeHtml(meta.label || key.split('.').pop()) + '</strong>' +
+        '<code>' + escapeHtml(key) + '</code>' +
+        (meta.hint ? '<div class="setting-hint">' + escapeHtml(meta.hint) + '</div>' : '') +
+        '</div>' +
+        '<div class="setting-control">' + controlHtml(key) + '</div>' +
+        '</div>';
+}
+
+function sectionHtml(section) {
+    var meta = sectionMeta(section);
+    var keys = keysOfSection(section);
+    var html = '<section class="card setting-section" id="sec-' + escapeHtml(section) +
+        '" data-section="' + escapeHtml(section) + '" style="margin-top:20px;">' +
+        '<div class="card-head"><div>' +
+        '<h2 class="card-title"><svg><use href="#' + escapeHtml(meta.icon || 'i-gear') +
+        '"/></svg>' + escapeHtml(meta.label || section) + '</h2>' +
+        '<p class="card-sub">' + escapeHtml(meta.description || section) + '</p>' +
+        '</div><span class="badge">' + keys.length + ' 项</span></div>' +
+        '<div class="card-body">';
+
+    if (section === 'plugins') {
+        pluginOrder.forEach(function (plugin) {
+            var pmeta = pluginMeta(plugin);
+            var pkeys = pluginKeys(plugin);
+            if (!pkeys.length) return;
+            html += '<div class="plugin-setting" id="sec-plugins-' + escapeHtml(plugin) +
+                '" data-plugin="' + escapeHtml(plugin) + '">' +
+                '<div class="plugin-setting-head">' +
+                '<div><strong>' + escapeHtml(pmeta.label || plugin) + '</strong>' +
+                '<span class="tiny dim mono">' + escapeHtml(plugin) + '</span></div>' +
+                '<p class="tiny muted">' + escapeHtml(pmeta.description || '') + '</p>' +
+                '</div>' +
+                '<div class="plugin-setting-body">' +
+                pkeys.map(rowHtml).join('') +
+                '</div></div>';
+        });
+    } else {
+        html += keys.map(rowHtml).join('');
+    }
+
+    html += '</div></section>';
+    return html;
+}
+
+var navHtml = '';
+sectionOrder.forEach(function (section) {
+    if (section === 'plugins') {
+        var count = keysOfSection(section).length;
+        navHtml += '<a href="#sec-plugins">' + escapeHtml(sectionMeta(section).label || section) +
+            ' · ' + count + '</a>';
+        pluginOrder.forEach(function (plugin) {
+            var pkeys = pluginKeys(plugin);
+            if (!pkeys.length) return;
+            navHtml += '<a href="#sec-plugins-' + escapeHtml(plugin) + '">' +
+                escapeHtml((pluginMeta(plugin).label || plugin).split(' ')[0]) + '</a>';
+        });
+    } else {
+        navHtml += '<a href="#sec-' + escapeHtml(section) + '">' +
+            escapeHtml(sectionMeta(section).label || section) + ' · ' +
+            keysOfSection(section).length + '</a>';
+    }
+});
+
+document.getElementById('settings-nav').innerHTML = navHtml;
+document.getElementById('settings-form').innerHTML = sectionOrder.map(sectionHtml).join('');
+
+/* ---------- edits ---------- */
+function parseControl(input) {
+    var type = input.getAttribute('data-type');
+    if (type === 'bool') return input.checked;
+    if (type === 'int') {
+        if (input.value === '') return flatSettings[input.getAttribute('data-key')];
+        var intValue = parseInt(input.value, 10);
+        return isNaN(intValue) ? flatSettings[input.getAttribute('data-key')] : intValue;
+    }
+    if (type === 'float') {
+        if (input.value === '') return flatSettings[input.getAttribute('data-key')];
+        var floatValue = parseFloat(input.value);
+        return isNaN(floatValue) ? flatSettings[input.getAttribute('data-key')] : floatValue;
+    }
+    if (type === 'array') {
+        var key = input.getAttribute('data-key');
+        var itemType = (metaFor(key).item_type || 'text');
+        return input.value.split(/\r?\n/).map(function (line) {
+            return line.trim();
+        }).filter(Boolean).map(function (line) {
+            if (itemType === 'int') {
+                var parsed = parseInt(line, 10);
+                return isNaN(parsed) ? line : parsed;
+            }
+            return line;
+        });
+    }
+    return input.value;
+}
+
+function rowOf(input) {
+    return input.closest ? input.closest('.setting-row') : null;
+}
+
+function updateDirty() {
+    var count = Object.keys(changed).length;
+    var el = document.getElementById('dirty-count');
+    el.textContent = count ? (count + ' 项未保存的修改') : '没有未保存的修改';
+    el.className = count ? 'dirty' : '';
+}
+
+function onFieldChange(event) {
+    var input = event.target;
+    var key = input.getAttribute('data-key');
+    if (!key) return;
+    var value = parseControl(input);
+    changed[key] = value;
+    flatSettings[key] = value;
+    var row = rowOf(input);
+    if (row) row.classList.add('changed');
+    updateDirty();
+}
+
+var form = document.getElementById('settings-form');
+form.addEventListener('input', onFieldChange);
+form.addEventListener('change', onFieldChange);
+
+/* ---------- tool helpers ---------- */
+function updateToolBadges() {
+    document.querySelectorAll('.tool-status[data-tool]').forEach(function (el) {
+        var tool = toolByKey[el.getAttribute('data-tool')];
+        if (tool) el.innerHTML = toolBadgeHtml(tool);
+    });
+}
+
+function refreshTools() {
+    fetch('/api/tools')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            (data.tools || []).forEach(function (tool) { toolByKey[tool.key] = tool; });
+            updateToolBadges();
+        })
+        .catch(function () { /* keep previous status */ });
+}
+
+function checkTool(button) {
+    var row = rowOf(button);
+    if (!row) return;
+    var input = row.querySelector('.setting-control input[data-key]');
+    var resultEl = row.querySelector('.path-result');
+    var key = input ? input.getAttribute('data-key') : '';
+    var tool = input ? input.getAttribute('data-tool') : '';
+    if (!input) return;
+    resultEl.textContent = '检测中…';
+    resultEl.className = 'path-result tiny dim';
+    fetch('/api/tools/check', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: input.value.trim(), key: tool || undefined})
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (!data.ok) {
+                resultEl.textContent = '未找到：' + (data.path || input.value || '（空）');
+                resultEl.className = 'path-result tiny path-bad';
+                showToast('工具路径不可用', 'error');
+                return;
+            }
+            var suffix = data.version ? ' · ' + data.version : '';
+            resultEl.textContent = '可用：' + data.path + suffix;
+            resultEl.className = 'path-result tiny path-ok';
+            showToast('工具检测通过', 'success');
+        })
+        .catch(function (err) {
+            resultEl.textContent = '检测失败：' + err.message;
+            resultEl.className = 'path-result tiny path-bad';
+        });
+}
+
+function clearPath(button) {
+    var row = rowOf(button);
+    if (!row) return;
+    var input = row.querySelector('.setting-control input[data-key]');
+    if (!input) return;
+    input.value = '';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    showToast('已恢复默认路径，保存后生效', 'info');
+}
+
+/* ---------- filter ---------- */
+function filterSettings(query) {
+    query = (query || '').trim().toLowerCase();
+    document.querySelectorAll('#settings-form .setting-section').forEach(function (section) {
+        var visible = 0;
+        section.querySelectorAll('.setting-row').forEach(function (row) {
+            var hit = !query || (row.getAttribute('data-search') || '').indexOf(query) !== -1;
+            row.style.display = hit ? '' : 'none';
+            if (hit) visible++;
+        });
+        section.querySelectorAll('.plugin-setting').forEach(function (block) {
+            var blockVisible = 0;
+            block.querySelectorAll('.setting-row').forEach(function (row) {
+                if (row.style.display !== 'none') blockVisible++;
+            });
+            block.style.display = blockVisible ? '' : 'none';
+        });
+        section.style.display = visible ? '' : 'none';
+    });
+}
+
+/* ---------- save ---------- */
+function saveSettings() {
+    var payload = {};
+    document.querySelectorAll('#settings-form [data-key]').forEach(function (input) {
+        var key = input.getAttribute('data-key');
+        if (!key) return;
+        payload[key] = parseControl(input);
+    });
+
+    var btn = document.getElementById('save-btn');
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.querySelector('.btn-label').textContent = '保存中…';
+
+    fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                showMsg(data.error, true);
+                return;
+            }
+            changed = {};
+            updateDirty();
+            document.querySelectorAll('#settings-form .setting-row.changed').forEach(function (row) {
+                row.classList.remove('changed');
+            });
+            document.getElementById('dirty-count').textContent = '设置已保存并生效';
+            document.getElementById('dirty-count').className = 'msg-ok';
+            showMsg('设置已保存并生效。', false);
+            refreshTools();
+        })
+        .catch(function (err) { showMsg('保存失败：' + err.message, true); })
+        .then(function () {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.querySelector('.btn-label').textContent = '保存全部';
+        });
+}
+
+function showMsg(text, isError) {
+    var el = document.getElementById('msg');
+    el.textContent = text;
+    el.className = isError ? 'msg-error' : 'msg-ok';
+    showToast(text, isError ? 'error' : 'success');
+}
+</script>
+{% endblock %}

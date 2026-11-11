@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}批量扫描 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Batch Monitor</div>
+        <h1 class="page-title">批量扫描任务</h1>
+        <p class="page-sub">集中查看同一批次任务的实时状态，全部结束后自动停止刷新。</p>
+    </div>
+    <div class="page-actions">
+        <a class="btn" href="/history">
+            <svg><use href="#i-history"/></svg>历史任务
+        </a>
+        <a class="btn btn-primary" href="/">
+            <svg><use href="#i-plus"/></svg>新建扫描
+        </a>
+    </div>
+</div>
+
+<div class="batch-summary" id="batch-summary" style="display:none;">
+    <div><div class="stat-value" id="sum-total">0</div><div class="stat-label">任务总数</div></div>
+    <div><div class="stat-value" id="sum-done" style="color:var(--success);">0</div><div class="stat-label">已完成</div></div>
+    <div><div class="stat-value" id="sum-running" style="color:var(--info);">0</div><div class="stat-label">运行中</div></div>
+    <div><div class="stat-value" id="sum-failed" style="color:var(--danger);">0</div><div class="stat-label">失败</div></div>
+    <div style="margin-left:auto;">
+        <span class="badge badge-info" id="batch-status">刷新中…</span>
+    </div>
+</div>
+
+<section class="card" id="batch-card">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title"><svg><use href="#i-radar"/></svg>任务列表</h2>
+            <p class="card-sub">每 3 秒刷新一次，完成后自动停止。</p>
+        </div>
+        <button class="btn btn-sm" type="button" onclick="loadAll()">
+            <svg><use href="#i-refresh"/></svg>刷新
+        </button>
+    </div>
+    <div class="card-body" style="padding:0;" id="batch-table-wrap">
+        <div class="table-wrap" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>任务 ID</th>
+                        <th>目标</th>
+                        <th class="hide-md">目标类型</th>
+                        <th>阶段进度</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="batch-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="empty" id="batch-empty" style="display:none;">
+        <span class="empty-icon"><svg><use href="#i-inbox"/></svg></span>
+        <strong id="batch-empty-title">未提供任务 ID</strong>
+        <span id="batch-empty-sub">请从新建扫描页面提交批量目标，或检查 URL 中的 ids 参数。</span>
+        <a class="btn btn-sm" href="/" style="margin-top:8px;">新建扫描</a>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var taskIds = [];
+var timer = null;
+var finishedNotified = false;
+
+(function () {
+    var params = new URLSearchParams(window.location.search);
+    var ids = params.get('ids');
+    if (ids) {
+        taskIds = ids.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    if (!taskIds.length) {
+        document.getElementById('batch-table-wrap').style.display = 'none';
+        document.getElementById('batch-empty').style.display = 'flex';
+        return;
+    }
+    document.getElementById('batch-summary').style.display = 'flex';
+    document.getElementById('batch-table-wrap').style.display = '';
+    document.getElementById('batch-empty').style.display = 'none';
+    taskIds.forEach(renderPlaceholder);
+    loadAll();
+    timer = setInterval(loadAll, 3000);
+})();
+
+function renderPlaceholder(tid) {
+    var tr = document.createElement('tr');
+    tr.id = 'row-' + tid;
+    tr.innerHTML = '<td class="mono result-id">' + escapeHtml(tid) + '</td>' +
+        '<td colspan="4" class="dim">加载中…</td>' +
+        '<td>-</td>';
+    document.getElementById('batch-tbody').appendChild(tr);
+}
+
+function stageProgress(data) {
+    var states = data.stage_states || {};
+    var total = 6;
+    var done = Object.keys(states).filter(function (k) {
+        return states[k] === 'done' || states[k] === 'skipped';
+    }).length;
+    var pct = Math.min(100, Math.round(done / total * 100));
+    return '<div class="row" style="gap:7px;">' +
+        '<div class="progress-bar" style="flex:1;min-width:60px;height:6px;">' +
+        '<div class="progress-fill" style="width:' + pct + '%;' +
+        (data.status === 'failed' ? 'background:var(--danger);' : '') + '"></div></div>' +
+        '<span class="tiny dim nowrap">' + done + '/' + total + '</span></div>';
+}
+
+function statusPill(status) {
+    var labels = {done: '已完成', running: '运行中', failed: '失败', pending: '等待中', unknown: '未知'};
+    return '<span class="pill pill-' + escapeHtml(status || 'pending') + '">' +
+        escapeHtml(labels[status] || status || '未知') + '</span>';
+}
+
+function loadAll() {
+    if (!taskIds.length) return;
+
+    var requests = taskIds.map(function (tid) {
+        return fetch('/api/status/' + encodeURIComponent(tid))
+            .then(function (r) { return r.json(); })
+            .then(function (data) { return {tid: tid, data: data}; })
+            .catch(function (err) { return {tid: tid, error: err}; });
+    });
+
+    Promise.allSettled(requests).then(function (results) {
+        var counts = {done: 0, running: 0, failed: 0, pending: 0, unknown: 0};
+        var allFinished = true;
+
+        results.forEach(function (item) {
+            var payload = item.status === 'fulfilled' ? item.value : {tid: '?', error: item.reason};
+            var tid = payload.tid;
+            var data = payload.data || {};
+            var status = data.status || (payload.error ? 'unknown' : 'pending');
+            if (counts[status] === undefined) counts[status] = 0;
+            counts[status]++;
+            if (status !== 'done' && status !== 'failed') allFinished = false;
+
+            var tr = document.getElementById('row-' + tid);
+            if (!tr) {
+                tr = document.createElement('tr');
+                tr.id = 'row-' + tid;
+                document.getElementById('batch-tbody').appendChild(tr);
+            }
+            var action = status === 'done'
+                ? '<a class="btn btn-sm btn-primary" href="/results/' + encodeURIComponent(tid) + '">查看结果</a>'
+                : '<a class="btn btn-sm" href="/status/' + encodeURIComponent(tid) + '">查看进度</a>';
+            tr.innerHTML =
+                '<td><a class="mono result-id" href="/status/' + encodeURIComponent(tid) + '">' +
+                    escapeHtml(data.task_id || tid) + '</a></td>' +
+                '<td><strong class="truncate" title="' + escapeHtml(data.target || '') + '">' +
+                    escapeHtml(data.target || '—') + '</strong></td>' +
+                '<td class="hide-md"><span class="badge">' + escapeHtml(data.target_type || '—') + '</span></td>' +
+                '<td style="min-width:130px;">' + stageProgress(data) + '</td>' +
+                '<td>' + statusPill(status) + '</td>' +
+                '<td><div class="actions">' + action + '</div></td>';
+        });
+
+        document.getElementById('sum-total').textContent = taskIds.length;
+        document.getElementById('sum-done').textContent = counts.done;
+        document.getElementById('sum-running').textContent = counts.running + (counts.pending || 0);
+        document.getElementById('sum-failed').textContent = counts.failed;
+
+        var badge = document.getElementById('batch-status');
+        if (allFinished) {
+            badge.className = 'badge badge-success';
+            badge.textContent = '全部结束';
+            if (timer) {
+                clearInterval(timer);
+                timer = null;
+            }
+            if (!finishedNotified) {
+                finishedNotified = true;
+                showToast('所有批量任务已结束', 'success');
+            }
+        } else {
+            badge.className = 'badge badge-info';
+            badge.textContent = '刷新中 · ' + (counts.running + (counts.pending || 0)) + ' 个进行中';
+        }
+    });
+}
+</script>
+{% endblock %}

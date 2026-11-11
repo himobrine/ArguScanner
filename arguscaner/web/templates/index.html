@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}新建扫描 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Target Intake</div>
+        <h1 class="page-title">新建扫描</h1>
+        <p class="page-sub">录入域名、IP、CIDR 或 URL，启动一条完整的信息收集流水线。支持多目标批量执行。</p>
+    </div>
+    <div class="page-actions">
+        <a class="btn" href="/history">
+            <svg><use href="#i-history"/></svg>历史任务
+        </a>
+    </div>
+</div>
+
+<div class="scan-layout">
+    <section class="card">
+        <div class="card-head">
+            <div>
+                <h2 class="card-title"><svg><use href="#i-radar"/></svg>扫描目标</h2>
+                <p class="card-sub">多个目标可用换行或逗号分隔，自动识别并拆分。</p>
+            </div>
+            <span class="count-badge" id="target-count">0 个目标</span>
+        </div>
+        <div class="card-body">
+            <form id="scan-form" onsubmit="submitScan(event)">
+                <div class="field">
+                    <label class="label" for="target">目标 <span class="req">*</span></label>
+                    <textarea id="target" name="target" rows="6" class="input"
+                        placeholder="example.com&#10;192.168.1.0/24&#10;https://10.0.0.1:8443" required></textarea>
+                    <div class="example-chips">
+                        <span class="dim tiny" style="align-self:center;margin-right:2px;">快速填入：</span>
+                        <button type="button" onclick="useExample('example.com')">example.com</button>
+                        <button type="button" onclick="useExample('192.168.1.10')">192.168.1.10</button>
+                        <button type="button" onclick="useExample('10.0.0.0/24')">10.0.0.0/24</button>
+                        <button type="button" onclick="useExample('https://example.com')">https://example.com</button>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label class="label">导入文件</label>
+                    <label class="dropzone" id="dropzone" for="target-file">
+                        <span class="dropzone-icon"><svg><use href="#i-upload"/></svg></span>
+                        <span>
+                            <strong>点击选择文件，或拖拽到此处</strong>
+                            <small>支持 .txt / .csv / .lst，每行一个目标</small>
+                        </span>
+                        <input type="file" id="target-file" accept=".txt,.csv,.lst">
+                    </label>
+                </div>
+
+                <div class="field">
+                    <label class="label" for="pipeline">扫描流程</label>
+                    <select id="pipeline" name="pipeline" class="input">
+                        <option value="default">默认侦察流程</option>
+                    </select>
+                    <div class="hint">在「流程」页面可编辑阶段、层级与数据连接；递归轮次使用独立流程。</div>
+                </div>
+
+                <div class="field">
+                    <div class="switch-row">
+                        <div class="switch-copy">
+                            <strong>多轮递归扫描</strong>
+                            <span>发现新资产后继续探测，直到无新增或达到轮次上限；已扫描 IP 自动跳过。</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="recursive" name="recursive" checked>
+                            <span class="switch-track"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="row" style="justify-content:space-between;">
+                    <span class="hint">按 <span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 快速提交</span>
+                    <button type="submit" class="btn btn-primary" id="submit-btn">
+                        <span class="spinner"></span>
+                        <span class="btn-label">开始扫描</span>
+                    </button>
+                </div>
+            </form>
+
+            <div id="result" class="inline-result"></div>
+        </div>
+    </section>
+
+    <aside class="stack">
+        <section class="card">
+            <div class="card-head">
+                <h2 class="card-title"><svg><use href="#i-flow"/></svg>扫描流程</h2>
+            </div>
+            <div class="card-body">
+                <div class="step-list">
+                    <div class="step">
+                        <span class="step-num">1</span>
+                        <div><strong>资产收集</strong><span>OneForAll 子域名枚举，汇总域名与 URL。</span></div>
+                    </div>
+                    <div class="step">
+                        <span class="step-num">2</span>
+                        <div><strong>IP 探测与端口扫描</strong><span>解析主机 IP，nmap 扫描开放端口，已扫描 IP 不重复。</span></div>
+                    </div>
+                    <div class="step">
+                        <span class="step-num">3</span>
+                        <div><strong>Web 与接口发现</strong><span>httpx 存活检测、JSFinder / URLFinder 提取、API 端点探测。</span></div>
+                    </div>
+                    <div class="step">
+                        <span class="step-num">4</span>
+                        <div><strong>递归扩展</strong><span>新主机与 API 命中自动进入下一轮，直到无新增资产。</span></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2 class="card-title"><svg><use href="#i-alert"/></svg>使用提示</h2>
+            </div>
+            <div class="card-body stack tiny muted">
+                <div>扫描结果实时写入 <span class="mono">workspace/&lt;task_id&gt;/</span>，可在历史任务中查看进度。</div>
+                <div>递归轮次产物位于 <span class="mono">rounds/rNNN/</span>，导出 Excel 会汇总全部轮次。</div>
+                <div>关闭递归可只执行第一轮，适合快速验证目标连通性。</div>
+            </div>
+        </section>
+    </aside>
+</div>
+
+<script>
+var targetEl = document.getElementById('target');
+var submitBtn = document.getElementById('submit-btn');
+
+function parseTargets(raw) {
+    return String(raw || '').split(/[\n,]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+function updateCount() {
+    var count = parseTargets(targetEl.value).length;
+    document.getElementById('target-count').textContent = count + ' 个目标';
+}
+
+function useExample(value) {
+    targetEl.value = value;
+    targetEl.focus();
+    updateCount();
+}
+
+targetEl.addEventListener('input', updateCount);
+
+document.getElementById('target-file').addEventListener('change', function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+        targetEl.value = String(ev.target.result || '').trim();
+        updateCount();
+        showToast('已导入 ' + file.name, 'success');
+    };
+    reader.readAsText(file);
+});
+
+// Drag & drop onto the dropzone or textarea
+(function () {
+    var zone = document.getElementById('dropzone');
+    ['dragenter', 'dragover'].forEach(function (name) {
+        zone.addEventListener(name, function (e) {
+            e.preventDefault();
+            zone.classList.add('dragover');
+        });
+    });
+    ['dragleave', 'drop'].forEach(function (name) {
+        zone.addEventListener(name, function (e) {
+            e.preventDefault();
+            zone.classList.remove('dragover');
+        });
+    });
+    zone.addEventListener('drop', function (e) {
+        var file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+            targetEl.value = String(ev.target.result || '').trim();
+            updateCount();
+            showToast('已导入 ' + file.name, 'success');
+        };
+        reader.readAsText(file);
+    });
+})();
+
+document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('scan-form').requestSubmit();
+    }
+});
+
+function setLoading(loading) {
+    submitBtn.disabled = loading;
+    submitBtn.classList.toggle('loading', loading);
+    submitBtn.querySelector('.btn-label').textContent = loading ? '正在提交…' : '开始扫描';
+}
+
+function renderSuccess(title, detailHtml) {
+    var box = document.getElementById('result');
+    box.innerHTML = '<div class="card"><div class="card-body tight">' +
+        '<div class="row" style="justify-content:space-between;">' +
+        '<div><strong>' + escapeHtml(title) + '</strong><div class="hint" style="margin-top:2px;">' +
+        detailHtml + '</div></div>' +
+        '<span class="badge badge-success">已提交</span>' +
+        '</div></div></div>';
+}
+
+function submitScan(e) {
+    e.preventDefault();
+    var raw = targetEl.value.trim();
+    if (!raw) {
+        showToast('请先输入扫描目标', 'error');
+        targetEl.focus();
+        return;
+    }
+
+    var lines = parseTargets(raw);
+    var recursive = document.getElementById('recursive').checked;
+    var pipeline = document.getElementById('pipeline').value || 'default';
+    setLoading(true);
+
+    if (lines.length === 1) {
+        fetch('/api/scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({target: lines[0], recursive: recursive, pipeline: pipeline})
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.task_id) {
+                var id = escapeHtml(data.task_id);
+                showToast('扫描已启动：' + data.task_id, 'success');
+                renderSuccess('扫描已启动',
+                    '任务 <span class="result-id">' + id + '</span> · ' +
+                    '<a href="/status/' + encodeURIComponent(data.task_id) + '">查看进度</a> · ' +
+                    '<a href="/history">返回历史</a>');
+            } else {
+                showToast('错误：' + (data.error || '未知错误'), 'error');
+            }
+        })
+        .catch(function (err) { showToast('网络错误：' + err.message, 'error'); })
+        .then(function () { setLoading(false); });
+    } else {
+        fetch('/api/scan/batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({targets: raw, recursive: recursive, pipeline: pipeline})
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.tasks && data.tasks.length > 0) {
+                var ids = data.tasks.map(function (t) { return t.task_id; });
+                showToast('批量扫描已启动：' + ids.length + ' 个任务', 'success');
+                var links = data.tasks.slice(0, 5).map(function (t) {
+                    return '<a href="/status/' + encodeURIComponent(t.task_id) + '">' + escapeHtml(t.target || t.task_id) + '</a>';
+                }).join(' · ');
+                var more = ids.length > 5 ? ' 等 ' + ids.length + ' 个目标' : '';
+                renderSuccess('批量扫描已启动',
+                    links + more + '<br><a href="/batch?ids=' + encodeURIComponent(ids.join(',')) + '">打开批量状态页</a>');
+            } else {
+                var errMsg = (data.errors || []).map(function (e) {
+                    return e.target + ': ' + e.error;
+                }).join('; ');
+                showToast('错误：' + (errMsg || data.error || '未知错误'), 'error');
+            }
+        })
+        .catch(function (err) { showToast('网络错误：' + err.message, 'error'); })
+        .then(function () { setLoading(false); });
+    }
+}
+
+fetch('/api/pipelines')
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        var select = document.getElementById('pipeline');
+        var current = select.value || 'default';
+        select.innerHTML = '';
+        (data.pipelines || []).forEach(function (item) {
+            var option = document.createElement('option');
+            option.value = item.name;
+            option.textContent = item.name +
+                (item.builtin ? '（默认）' : '') + ' · ' + (item.stage_count || 0) + ' 阶段';
+            if (item.name === current) option.selected = true;
+            select.appendChild(option);
+        });
+    })
+    .catch(function () { /* keep the default option */ });
+
+updateCount();
+</script>
+{% endblock %}

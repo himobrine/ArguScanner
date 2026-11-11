@@ -1,0 +1,952 @@
+{% extends "base.html" %}
+{% block title %}流程 · ArguScanner{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Pipeline Definition</div>
+        <h1 class="page-title">流程定义</h1>
+        <p class="page-sub">自上而下的执行树：层级决定执行顺序，同一层级并发；实线为数据连接，虚线仅排序。可直接编辑阶段与数据来源。</p>
+    </div>
+    <div class="page-actions">
+        <select class="input pipeline-select" id="pipeline-select" onchange="switchPipeline(this.value)" aria-label="选择流程">
+            {% for item in pipelines %}
+            <option value="{{ item.name }}" {{ 'selected' if item.name == pipeline_name }}>{{ item.name }}{% if item.builtin %}（默认）{% endif %}</option>
+            {% endfor %}
+        </select>
+        <button class="btn" type="button" onclick="createPipeline()">
+            <svg><use href="#i-plus"/></svg>新建流程
+        </button>
+        <button class="btn btn-primary" type="button" onclick="savePipeline()" id="save-btn">
+            <svg><use href="#i-check"/></svg>保存
+        </button>
+    </div>
+</div>
+
+<div class="stat-grid" style="margin-bottom:20px;">
+    <div class="stat accent">
+        <div class="stat-value" id="stat-stages">{{ stages|length }}</div>
+        <div class="stat-label">阶段总数</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value" id="stat-levels">{{ levels|length }}</div>
+        <div class="stat-label">执行层级</div>
+    </div>
+    <div class="stat purple">
+        <div class="stat-value" id="stat-plugins">{{ stages|map(attribute='plugin')|unique|list|length }}</div>
+        <div class="stat-label">涉及插件</div>
+    </div>
+    <div class="stat warning">
+        <div class="stat-value" id="stat-dirty">—</div>
+        <div class="stat-label">编辑状态</div>
+    </div>
+</div>
+
+<div id="error-panel" class="alert-box" style="display:none;"></div>
+
+<div class="pipeline-editor">
+    <section class="card">
+        <div class="card-head">
+            <div>
+                <h2 class="card-title"><svg><use href="#i-flow"/></svg>执行树</h2>
+                <p class="card-sub">点击节点编辑阶段；连线标签为声明的数据来源。</p>
+            </div>
+            <div class="row" style="gap:12px;">
+                <span class="legend"><i class="legend-line data"></i>数据连接</span>
+                <span class="legend"><i class="legend-line order"></i>顺序约束</span>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0;">
+            <div class="graph-scroll" id="graph-scroll">
+                <svg id="pipeline-graph" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="流程执行树"></svg>
+            </div>
+        </div>
+    </section>
+
+    <aside class="stack">
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title"><svg><use href="#i-inbox"/></svg>层级编辑</h2>
+                    <p class="card-sub">上移/下移调整阶段层级，层级必须早于其依赖。</p>
+                </div>
+                <button class="btn btn-sm" type="button" onclick="openStage(null)">
+                    <svg><use href="#i-plus"/></svg>阶段
+                </button>
+            </div>
+            <div class="card-body" id="level-editor"></div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2 class="card-title"><svg><use href="#i-alert"/></svg>操作</h2>
+            </div>
+            <div class="card-body stack">
+                <div class="row" style="gap:8px;flex-wrap:wrap;">
+                    <button class="btn btn-sm" type="button" onclick="validatePipeline()">
+                        <svg><use href="#i-check"/></svg>校验
+                    </button>
+                    <button class="btn btn-sm" type="button" onclick="restorePipeline()">
+                        <svg><use href="#i-refresh"/></svg>恢复上一版
+                    </button>
+                    <button class="btn btn-sm btn-danger" type="button" onclick="deletePipeline()" id="delete-btn">
+                        <svg><use href="#i-x"/></svg>删除流程
+                    </button>
+                </div>
+                <div class="divider"></div>
+                <div class="tiny dim">
+                    文件：<span class="mono" id="pipeline-file">{{ pipeline_file }}</span><br>
+                    保存时自动写入时间戳备份到 <span class="mono">configs/pipelines/.history/</span>。
+                </div>
+            </div>
+        </section>
+    </aside>
+</div>
+
+<section class="card" style="margin-top:20px;">
+    <div class="card-head">
+        <div>
+            <h2 class="card-title"><svg><use href="#i-terminal"/></svg>阶段清单</h2>
+            <p class="card-sub">按层级排序；点击行编辑阶段。</p>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <div class="table-wrap" style="border:0;border-radius:0 0 var(--radius-lg) var(--radius-lg);">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>层级</th>
+                        <th>阶段</th>
+                        <th>插件</th>
+                        <th>数据来源</th>
+                        <th class="hide-lg">依赖</th>
+                        <th class="hide-lg">顺序</th>
+                        <th class="hide-lg">参数</th>
+                    </tr>
+                </thead>
+                <tbody id="stage-table"></tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<div class="drawer-backdrop" id="drawer-backdrop" onclick="closeStage()"></div>
+<aside class="drawer" id="stage-drawer" aria-hidden="true">
+    <div class="drawer-head">
+        <div>
+            <div class="eyebrow">Stage Editor</div>
+            <h2 class="drawer-title" id="drawer-title">编辑阶段</h2>
+        </div>
+        <button class="btn btn-ghost btn-icon" type="button" onclick="closeStage()" aria-label="关闭">
+            <svg><use href="#i-x"/></svg>
+        </button>
+    </div>
+    <div class="drawer-body">
+        <div class="form-grid">
+            <div class="field">
+                <label class="label" for="f-id">阶段 ID</label>
+                <input class="input mono" id="f-id" autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="label" for="f-label">显示名称</label>
+                <input class="input" id="f-label" autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="label" for="f-plugin">插件</label>
+                <input class="input mono" id="f-plugin" list="plugin-names" autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="label" for="f-level">层级</label>
+                <input class="input" id="f-level" type="number" min="1" step="1">
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="label" for="f-when">目标类型条件（逗号分隔，留空表示全部）</label>
+            <input class="input mono" id="f-when" placeholder="domain, ip" autocomplete="off">
+        </div>
+
+        <div class="field">
+            <label class="label">数据来源（inputs）</label>
+            <div id="f-inputs" class="input-rows"></div>
+            <button class="btn btn-sm" type="button" onclick="addInputRow()">
+                <svg><use href="#i-plus"/></svg>添加数据来源
+            </button>
+        </div>
+
+        <div class="form-grid">
+            <div class="field">
+                <label class="label">依赖（depends_on：失败会阻塞）</label>
+                <div class="check-list" id="f-depends"></div>
+            </div>
+            <div class="field">
+                <label class="label">顺序（after：仅排序）</label>
+                <div class="check-list" id="f-after"></div>
+            </div>
+        </div>
+
+        <div class="form-grid">
+            <div class="field">
+                <label class="label" for="f-output">输出数据类型</label>
+                <input class="input mono" id="f-output" placeholder="url" autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="label" for="f-params">插件参数（JSON）</label>
+                <textarea class="input mono" id="f-params" rows="3" placeholder='{"ports": "80,443"}'></textarea>
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="label" for="f-desc">描述</label>
+            <textarea class="input" id="f-desc" rows="2"></textarea>
+        </div>
+
+        <div id="drawer-error" class="alert-box" style="display:none;"></div>
+    </div>
+    <div class="drawer-foot">
+        <button class="btn btn-danger" type="button" onclick="deleteStage()" id="stage-delete-btn">删除阶段</button>
+        <button class="btn" type="button" onclick="closeStage()">取消</button>
+        <button class="btn btn-primary" type="button" onclick="applyStage()">保存阶段</button>
+    </div>
+</aside>
+
+<datalist id="plugin-names">
+    {% for name in plugin_names %}<option value="{{ name }}"></option>{% endfor %}
+</datalist>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var INITIAL = {{ definition|tojson }};
+var PSEUDO = {target: '原始目标', round_targets: '本轮资产'};
+var state = {
+    name: {{ pipeline_name|tojson }},
+    file: {{ pipeline_file|tojson }},
+    definition: clone(INITIAL),
+    selected: null,
+    editing: null,
+    dirty: false
+};
+
+function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function jsArg(value) {
+    return escapeHtml(JSON.stringify(value));
+}
+
+function stageById(id) {
+    var stages = state.definition.stages || [];
+    for (var i = 0; i < stages.length; i++) {
+        if (stages[i].id === id) return stages[i];
+    }
+    return null;
+}
+
+function allStageIds() {
+    return (state.definition.stages || []).map(function (s) { return s.id; });
+}
+
+function inputLabel(stage, source) {
+    var inputs = stage.inputs || [];
+    for (var i = 0; i < inputs.length; i++) {
+        if (inputs[i].from === source) return inputs[i].data || '数据';
+    }
+    return '数据';
+}
+
+/* ---------- graph model ---------- */
+function computeLevels(def) {
+    var stages = def.stages || [];
+    if (!stages.length) return [];
+    var explicit = stages.every(function (s) { return s.level !== null && s.level !== undefined && s.level !== ''; });
+    if (explicit) {
+        var grouped = {};
+        stages.forEach(function (s) {
+            var key = parseInt(s.level, 10) || 1;
+            (grouped[key] = grouped[key] || []).push(s.id);
+        });
+        return Object.keys(grouped).map(Number).sort(function (a, b) { return a - b; })
+            .map(function (key) { return grouped[key]; });
+    }
+    var ids = {};
+    stages.forEach(function (s) { ids[s.id] = true; });
+    var deps = {};
+    stages.forEach(function (s) {
+        var list = (s.depends_on || []).concat(s.after || []);
+        (s.inputs || []).forEach(function (entry) {
+            if (ids[entry.from] && list.indexOf(entry.from) < 0) list.push(entry.from);
+        });
+        deps[s.id] = list.filter(function (d) { return ids[d]; });
+    });
+    var levels = [];
+    var assigned = {};
+    var current = stages.filter(function (s) { return deps[s.id].length === 0; })
+        .map(function (s) { return s.id; });
+    while (current.length) {
+        levels.push(current);
+        current.forEach(function (id) { assigned[id] = true; });
+        var next = [];
+        stages.forEach(function (s) {
+            if (assigned[s.id] || next.indexOf(s.id) >= 0) return;
+            if (deps[s.id].every(function (d) { return assigned[d]; })) next.push(s.id);
+        });
+        current = next;
+    }
+    if (levels.reduce(function (n, l) { return n + l.length; }, 0) < stages.length) {
+        stages.forEach(function (s) {
+            if (!assigned[s.id]) levels.push([s.id]);
+        });
+    }
+    return levels;
+}
+
+function buildGraph(def) {
+    var stages = def.stages || [];
+    var ids = {};
+    stages.forEach(function (s) { ids[s.id] = s; });
+
+    var usedSources = {};
+    stages.forEach(function (s) {
+        (s.inputs || []).forEach(function (entry) {
+            if (PSEUDO[entry.from]) usedSources[entry.from] = true;
+        });
+    });
+    var sourceIds = Object.keys(usedSources).sort();
+
+    var stageLevels = computeLevels(def);
+    var levelOf = {};
+    stageLevels.forEach(function (row, index) {
+        row.forEach(function (id) { levelOf[id] = index + 1; });
+    });
+    var rows = [];
+    if (sourceIds.length) rows.push(sourceIds);
+    stageLevels.forEach(function (row) { rows.push(row); });
+
+    var nodes = [];
+    var nodeIndex = {};
+    rows.forEach(function (row) {
+        row.forEach(function (id) {
+            var stage = ids[id];
+            nodeIndex[id] = nodes.length;
+            if (stage) {
+                nodes.push({
+                    id: id,
+                    kind: 'stage',
+                    label: stage.label || id,
+                    plugin: stage.plugin || '',
+                    level: levelOf[id] || 1,
+                    inputs: stage.inputs || []
+                });
+            } else {
+                nodes.push({
+                    id: id,
+                    kind: 'source',
+                    label: PSEUDO[id] || id,
+                    plugin: 'source',
+                    level: 0,
+                    inputs: []
+                });
+            }
+        });
+    });
+
+    var edges = [];
+    function addEdge(from, to, kind, label) {
+        if (!(from in nodeIndex) || !(to in nodeIndex)) return;
+        var exists = edges.some(function (e) {
+            return e.from === from && e.to === to && e.kind === kind;
+        });
+        if (!exists) edges.push({from: from, to: to, kind: kind, label: label || ''});
+    }
+    stages.forEach(function (s) {
+        (s.depends_on || []).forEach(function (dep) {
+            addEdge(dep, s.id, 'data', inputLabel(s, dep));
+        });
+        (s.after || []).forEach(function (dep) {
+            addEdge(dep, s.id, 'order', '顺序');
+        });
+        (s.inputs || []).forEach(function (entry) {
+            if (entry.from === s.id) return;
+            addEdge(entry.from, s.id, 'data', entry.data || '数据');
+        });
+    });
+    return {nodes: nodes, edges: edges, rows: rows};
+}
+
+/* ---------- rendering ---------- */
+function renderAll() {
+    var graph = buildGraph(state.definition);
+    renderGraph(graph);
+    renderLevels(graph);
+    renderTable(graph);
+    renderStats(graph);
+    document.getElementById('stat-dirty').textContent = state.dirty ? '未保存' : '已同步';
+    document.getElementById('save-btn').classList.toggle('btn-primary', true);
+    document.getElementById('delete-btn').disabled = state.name === 'default';
+    document.getElementById('pipeline-file').textContent = state.file;
+}
+
+function svgEl(name, attrs) {
+    var el = document.createElementNS('http://www.w3.org/2000/svg', name);
+    Object.keys(attrs || {}).forEach(function (key) { el.setAttribute(key, attrs[key]); });
+    return el;
+}
+
+function renderGraph(graph) {
+    var svg = document.getElementById('pipeline-graph');
+    var nodeW = 178;
+    var nodeH = 58;
+    var gapX = 34;
+    var gapY = 72;
+    var padX = 26;
+    var padY = 22;
+    var maxCount = 1;
+    graph.rows.forEach(function (row) { maxCount = Math.max(maxCount, row.length); });
+    var width = Math.max(640, padX * 2 + maxCount * nodeW + (maxCount - 1) * gapX);
+    var height = Math.max(180, padY * 2 + graph.rows.length * nodeH + (graph.rows.length - 1) * gapY);
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', width);
+    svg.setAttribute('height', height);
+    svg.innerHTML = '';
+
+    var defs = svgEl('defs');
+    ['data', 'order'].forEach(function (kind) {
+        var marker = svgEl('marker', {
+            id: 'arrow-' + kind, viewBox: '0 0 10 10', refX: '9', refY: '5',
+            markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse'
+        });
+        marker.appendChild(svgEl('path', {d: 'M 0 0 L 10 5 L 0 10 z', class: 'arrow-' + kind}));
+        defs.appendChild(marker);
+    });
+    svg.appendChild(defs);
+
+    var pos = {};
+    graph.rows.forEach(function (row, rowIndex) {
+        var rowWidth = row.length * nodeW + (row.length - 1) * gapX;
+        var startX = (width - rowWidth) / 2;
+        row.forEach(function (id, colIndex) {
+            pos[id] = {
+                x: startX + colIndex * (nodeW + gapX),
+                y: padY + rowIndex * (nodeH + gapY)
+            };
+        });
+    });
+
+    var edgeLayer = svgEl('g', {class: 'graph-edges'});
+    graph.edges.forEach(function (edge) {
+        var from = pos[edge.from];
+        var to = pos[edge.to];
+        if (!from || !to) return;
+        var x1 = from.x + nodeW / 2;
+        var y1 = from.y + nodeH;
+        var x2 = to.x + nodeW / 2;
+        var y2 = to.y;
+        if (y2 <= y1) {
+            y1 = from.y + nodeH / 2;
+            y2 = to.y + nodeH / 2;
+            x1 = from.x + (from.x < to.x ? nodeW : 0);
+            x2 = to.x + (from.x < to.x ? 0 : nodeW);
+        }
+        var midY = (y1 + y2) / 2;
+        var path = svgEl('path', {
+            d: 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + midY + ', ' + x2 + ' ' + midY + ', ' + x2 + ' ' + y2,
+            class: 'graph-edge ' + edge.kind,
+            'marker-end': 'url(#arrow-' + edge.kind + ')'
+        });
+        edgeLayer.appendChild(path);
+
+        if (edge.label) {
+            var lx = (x1 + x2) / 2;
+            var ly = midY;
+            var textWidth = Math.max(30, edge.label.length * 11 + 12);
+            edgeLayer.appendChild(svgEl('rect', {
+                x: lx - textWidth / 2, y: ly - 9, width: textWidth, height: 18,
+                rx: 6, class: 'edge-label-bg ' + edge.kind
+            }));
+            var label = svgEl('text', {
+                x: lx, y: ly + 4, class: 'edge-label ' + edge.kind,
+                'text-anchor': 'middle'
+            });
+            label.textContent = edge.label;
+            edgeLayer.appendChild(label);
+        }
+    });
+    svg.appendChild(edgeLayer);
+
+    var nodeLayer = svgEl('g', {class: 'graph-nodes'});
+    graph.nodes.forEach(function (node) {
+        var p = pos[node.id];
+        var group = svgEl('g', {
+            class: 'graph-node ' + node.kind + (state.selected === node.id ? ' selected' : ''),
+            'data-id': node.id,
+            tabindex: '0'
+        });
+        group.appendChild(svgEl('rect', {
+            x: p.x, y: p.y, width: nodeW, height: nodeH, rx: 12
+        }));
+        var title = svgEl('text', {
+            x: p.x + 14, y: p.y + 24, class: 'node-title'
+        });
+        title.textContent = node.label;
+        group.appendChild(title);
+        var sub = svgEl('text', {
+            x: p.x + 14, y: p.y + 43, class: 'node-sub'
+        });
+        sub.textContent = node.kind === 'source' ? '输入源 · ' + node.id : node.plugin + ' · L' + node.level;
+        group.appendChild(sub);
+        group.addEventListener('click', function () {
+            if (node.kind === 'source') return;
+            openStage(node.id);
+        });
+        group.addEventListener('keydown', function (event) {
+            if ((event.key === 'Enter' || event.key === ' ') && node.kind === 'stage') {
+                event.preventDefault();
+                openStage(node.id);
+            }
+        });
+        nodeLayer.appendChild(group);
+    });
+    svg.appendChild(nodeLayer);
+}
+
+function renderLevels(graph) {
+    var editor = document.getElementById('level-editor');
+    var levels = computeLevels(state.definition);
+    if (!levels.length) {
+        editor.innerHTML = '<div class="empty"><strong>暂无阶段</strong><span>点击右上角「阶段」添加第一个阶段。</span></div>';
+        return;
+    }
+    var html = '';
+    levels.forEach(function (row, index) {
+        html += '<div class="level-card">' +
+            '<div class="level-head">' +
+            '<span class="level-index">' + (index + 1) + '</span>' +
+            '<span class="level-name">层级 ' + (index + 1) + '</span>' +
+            '<span class="tiny dim">' + row.length + ' 个阶段</span>' +
+            '</div><div class="level-chips">';
+        row.forEach(function (id) {
+            var stage = stageById(id);
+            if (!stage) return;
+            html += '<div class="level-chip" data-id="' + escapeHtml(id) + '">' +
+                '<button class="chip-main" type="button" onclick="openStage(' + jsArg(id) + ')">' +
+                '<strong>' + escapeHtml(stage.label || id) + '</strong>' +
+                '<span class="mono">' + escapeHtml(id) + '</span>' +
+                '</button>' +
+                '<span class="chip-actions">' +
+                '<button type="button" title="上移" onclick="moveStage(' + jsArg(id) + ',-1)">↑</button>' +
+                '<button type="button" title="下移" onclick="moveStage(' + jsArg(id) + ',1)">↓</button>' +
+                '</span></div>';
+        });
+        html += '</div></div>';
+    });
+    editor.innerHTML = html;
+}
+
+function renderTable(graph) {
+    var body = document.getElementById('stage-table');
+    var levels = computeLevels(state.definition);
+    var levelOf = {};
+    levels.forEach(function (row, index) {
+        row.forEach(function (id) { levelOf[id] = index + 1; });
+    });
+    var order = [];
+    levels.forEach(function (row) { order = order.concat(row); });
+    if (!order.length) {
+        body.innerHTML = '<tr><td colspan="7"><div class="empty"><strong>暂无阶段</strong></div></td></tr>';
+        return;
+    }
+    var html = '';
+    order.forEach(function (id) {
+        var stage = stageById(id);
+        if (!stage) return;
+        var inputs = (stage.inputs || []).map(function (entry) {
+            return entry.from + (entry.data && entry.data !== '数据' ? ':' + entry.data : '');
+        }).join(', ') || '-';
+        var params = stage.params && Object.keys(stage.params).length
+            ? JSON.stringify(stage.params) : '-';
+        html += '<tr class="clickable" onclick="openStage(' + jsArg(id) + ')">' +
+            '<td><span class="level-index">' + levelOf[id] + '</span></td>' +
+            '<td><strong>' + escapeHtml(stage.label || id) + '</strong>' +
+            '<div class="tiny dim mono">' + escapeHtml(id) + '</div></td>' +
+            '<td class="mono">' + escapeHtml(stage.plugin) + '</td>' +
+            '<td class="mono tiny">' + escapeHtml(inputs) + '</td>' +
+            '<td class="tiny hide-lg">' + escapeHtml((stage.depends_on || []).join(', ') || '-') + '</td>' +
+            '<td class="tiny hide-lg">' + escapeHtml((stage.after || []).join(', ') || '-') + '</td>' +
+            '<td class="tiny mono hide-lg">' + escapeHtml(params) + '</td>' +
+            '</tr>';
+    });
+    body.innerHTML = html;
+}
+
+function renderStats(graph) {
+    var stages = state.definition.stages || [];
+    var plugins = {};
+    stages.forEach(function (s) { plugins[s.plugin] = true; });
+    document.getElementById('stat-stages').textContent = stages.length;
+    document.getElementById('stat-levels').textContent = computeLevels(state.definition).length;
+    document.getElementById('stat-plugins').textContent = Object.keys(plugins).length;
+}
+
+/* ---------- stage editing ---------- */
+function openStage(id) {
+    state.editing = id;
+    var stage;
+    if (id === null) {
+        var maxLevel = 1;
+        (state.definition.stages || []).forEach(function (s) {
+            maxLevel = Math.max(maxLevel, parseInt(s.level, 10) || 1);
+        });
+        stage = {
+            id: 'stage_' + ((state.definition.stages || []).length + 1),
+            plugin: (document.querySelector('#plugin-names option') || {}).value || '',
+            label: '',
+            level: maxLevel,
+            depends_on: [],
+            after: [],
+            when: {},
+            inputs: [],
+            outputs: {},
+            params: {},
+            description: ''
+        };
+        state.selected = null;
+    } else {
+        stage = stageById(id);
+        if (!stage) return;
+        state.selected = id;
+    }
+
+    document.getElementById('drawer-title').textContent = id === null ? '新增阶段' : '编辑阶段 · ' + id;
+    document.getElementById('f-id').value = stage.id;
+    document.getElementById('f-label').value = stage.label || '';
+    document.getElementById('f-plugin').value = stage.plugin || '';
+    document.getElementById('f-level').value = stage.level || 1;
+    var when = stage.when || {};
+    var types = when.target_type;
+    if (Array.isArray(types)) types = types.join(', ');
+    document.getElementById('f-when').value = types || '';
+    document.getElementById('f-output').value = (stage.outputs || {}).data || '';
+    document.getElementById('f-params').value = stage.params && Object.keys(stage.params).length
+        ? JSON.stringify(stage.params, null, 2) : '';
+    document.getElementById('f-desc').value = stage.description || '';
+    document.getElementById('stage-delete-btn').style.display = id === null ? 'none' : '';
+
+    renderInputRows(stage);
+    renderCheckList('f-depends', 'depends_on', stage.depends_on || []);
+    renderCheckList('f-after', 'after', stage.after || []);
+    document.getElementById('drawer-error').style.display = 'none';
+    document.getElementById('stage-drawer').classList.add('open');
+    document.getElementById('drawer-backdrop').classList.add('show');
+    document.getElementById('stage-drawer').setAttribute('aria-hidden', 'false');
+    renderAll();
+}
+
+function closeStage() {
+    state.editing = null;
+    state.selected = null;
+    document.getElementById('stage-drawer').classList.remove('open');
+    document.getElementById('drawer-backdrop').classList.remove('show');
+    document.getElementById('stage-drawer').setAttribute('aria-hidden', 'true');
+    renderAll();
+}
+
+function renderInputRows(stage) {
+    var box = document.getElementById('f-inputs');
+    var inputs = stage.inputs || [];
+    box.innerHTML = '';
+    inputs.forEach(function (entry) { addInputRow(entry.from, entry.data, entry.field); });
+}
+
+function addInputRow(from, data, field) {
+    var box = document.getElementById('f-inputs');
+    var row = document.createElement('div');
+    row.className = 'input-row';
+    var options = ['<option value="">选择来源…</option>'];
+    Object.keys(PSEUDO).forEach(function (key) {
+        options.push('<option value="' + key + '"' + (key === from ? ' selected' : '') + '>' +
+            PSEUDO[key] + '（' + key + '）</option>');
+    });
+    allStageIds().forEach(function (id) {
+        if (id === state.editing) return;
+        options.push('<option value="' + escapeHtml(id) + '"' + (id === from ? ' selected' : '') + '>' +
+            escapeHtml(id) + '</option>');
+    });
+    row.innerHTML = '<select class="input input-from">' + options.join('') + '</select>' +
+        '<input class="input input-data" placeholder="数据标签" value="' + escapeHtml(data || '') + '">' +
+        '<input class="input input-field mono" placeholder="字段（可选）" value="' + escapeHtml(field || '') + '">' +
+        '<button class="btn btn-ghost btn-icon" type="button" title="移除" onclick="this.parentNode.remove()">' +
+        '<svg><use href="#i-x"/></svg></button>';
+    box.appendChild(row);
+}
+
+function renderCheckList(containerId, key, selected) {
+    var box = document.getElementById(containerId);
+    box.innerHTML = '';
+    var ids = allStageIds().filter(function (id) { return id !== state.editing; });
+    if (!ids.length) {
+        box.innerHTML = '<span class="tiny dim">暂无其他阶段</span>';
+        return;
+    }
+    ids.forEach(function (id) {
+        var label = document.createElement('label');
+        label.className = 'check-item';
+        var input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = id;
+        input.checked = selected.indexOf(id) >= 0;
+        input.dataset.key = key;
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(id));
+        box.appendChild(label);
+    });
+}
+
+function collectInputs() {
+    var rows = document.querySelectorAll('#f-inputs .input-row');
+    var inputs = [];
+    rows.forEach(function (row) {
+        var from = row.querySelector('.input-from').value;
+        if (!from) return;
+        var entry = {from: from, data: row.querySelector('.input-data').value.trim() || '数据'};
+        var field = row.querySelector('.input-field').value.trim();
+        if (field) entry.field = field;
+        inputs.push(entry);
+    });
+    return inputs;
+}
+
+function collectChecks(containerId) {
+    var values = [];
+    document.querySelectorAll('#' + containerId + ' input[type=checkbox]:checked').forEach(function (box) {
+        values.push(box.value);
+    });
+    return values;
+}
+
+function applyStage() {
+    var errorBox = document.getElementById('drawer-error');
+    function fail(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = '';
+    }
+    var id = document.getElementById('f-id').value.trim();
+    var plugin = document.getElementById('f-plugin').value.trim();
+    if (!id) return fail('阶段 ID 不能为空');
+    if (!/^[A-Za-z0-9_]+$/.test(id)) return fail('阶段 ID 只能包含字母、数字和下划线');
+    var existing = stageById(id);
+    if (existing && id !== state.editing) return fail('阶段 ID 已存在：' + id);
+    if (!plugin) return fail('请填写插件名称');
+
+    var params = {};
+    var paramsText = document.getElementById('f-params').value.trim();
+    if (paramsText) {
+        try {
+            params = JSON.parse(paramsText);
+        } catch (err) {
+            return fail('插件参数不是合法 JSON：' + err.message);
+        }
+        if (!params || typeof params !== 'object' || Array.isArray(params)) {
+            return fail('插件参数必须是 JSON 对象');
+        }
+    }
+
+    var types = document.getElementById('f-when').value.trim();
+    var when = {};
+    if (types) {
+        when.target_type = types.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+        if (when.target_type.length === 1) when.target_type = when.target_type[0];
+    }
+
+    var stage = existing || {};
+    var oldId = state.editing;
+    stage.id = id;
+    stage.plugin = plugin;
+    stage.label = document.getElementById('f-label').value.trim() || id;
+    stage.level = parseInt(document.getElementById('f-level').value, 10) || 1;
+    stage.when = when;
+    stage.inputs = collectInputs();
+    stage.depends_on = collectChecks('f-depends');
+    stage.after = collectChecks('f-after');
+    var output = document.getElementById('f-output').value.trim();
+    stage.outputs = output ? {data: output} : {};
+    stage.params = params;
+    stage.description = document.getElementById('f-desc').value.trim();
+
+    if (!existing) {
+        state.definition.stages.push(stage);
+    }
+    if (oldId && oldId !== id) {
+        renameStageRefs(oldId, id);
+    }
+    state.dirty = true;
+    closeStage();
+    showToast('阶段已更新，记得保存流程', 'success');
+}
+
+function renameStageRefs(oldId, newId) {
+    (state.definition.stages || []).forEach(function (stage) {
+        stage.depends_on = (stage.depends_on || []).map(function (d) { return d === oldId ? newId : d; });
+        stage.after = (stage.after || []).map(function (d) { return d === oldId ? newId : d; });
+        (stage.inputs || []).forEach(function (entry) {
+            if (entry.from === oldId) entry.from = newId;
+        });
+    });
+}
+
+function deleteStage() {
+    if (!state.editing) return;
+    if (!confirm('删除阶段 ' + state.editing + '？引用它的数据来源与依赖会被清理。')) return;
+    var id = state.editing;
+    state.definition.stages = (state.definition.stages || []).filter(function (s) { return s.id !== id; });
+    state.definition.stages.forEach(function (stage) {
+        stage.depends_on = (stage.depends_on || []).filter(function (d) { return d !== id; });
+        stage.after = (stage.after || []).filter(function (d) { return d !== id; });
+        stage.inputs = (stage.inputs || []).filter(function (entry) { return entry.from !== id; });
+    });
+    state.dirty = true;
+    closeStage();
+    showToast('阶段已删除，记得保存流程', 'success');
+}
+
+function moveStage(id, delta) {
+    var levels = computeLevels(state.definition);
+    var levelOf = {};
+    levels.forEach(function (row, index) {
+        row.forEach(function (sid) { levelOf[sid] = index + 1; });
+    });
+    var stage = stageById(id);
+    if (!stage) return;
+    // Materialize explicit levels before the first manual move.
+    (state.definition.stages || []).forEach(function (s) {
+        s.level = levelOf[s.id] || 1;
+    });
+    var next = Math.max(1, (parseInt(stage.level, 10) || 1) + delta);
+    stage.level = next;
+    state.dirty = true;
+    renderAll();
+}
+
+/* ---------- pipeline actions ---------- */
+function renderErrors(errors) {
+    var panel = document.getElementById('error-panel');
+    if (!errors || !errors.length) {
+        panel.style.display = 'none';
+        panel.innerHTML = '';
+        return;
+    }
+    panel.style.display = '';
+    panel.innerHTML = '<strong>校验未通过</strong><ul>' +
+        errors.map(function (err) { return '<li>' + escapeHtml(err) + '</li>'; }).join('') +
+        '</ul>';
+}
+
+function validatePipeline() {
+    fetch('/api/pipeline/validate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({definition: state.definition})
+    })
+    .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+    .then(function (result) {
+        renderErrors(result.data.errors || []);
+        showToast(result.ok ? '校验通过' : '校验未通过，请查看错误面板',
+            result.ok ? 'success' : 'error');
+    })
+    .catch(function (err) { showToast('校验失败：' + err.message, 'error'); });
+}
+
+function savePipeline() {
+    fetch('/api/pipelines/' + encodeURIComponent(state.name), {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({definition: state.definition})
+    })
+    .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+    .then(function (result) {
+        if (!result.ok) {
+            renderErrors(result.data.errors || [result.data.error || '保存失败']);
+            showToast('保存失败：' + (result.data.error || '请检查流程定义'), 'error');
+            return;
+        }
+        state.definition = clone(result.data.definition);
+        state.file = result.data.file;
+        state.dirty = false;
+        renderErrors([]);
+        renderAll();
+        showToast('流程已保存', 'success');
+    })
+    .catch(function (err) { showToast('保存失败：' + err.message, 'error'); });
+}
+
+function restorePipeline() {
+    if (!confirm('恢复上一个备份版本？当前内容会先被备份。')) return;
+    fetch('/api/pipelines/' + encodeURIComponent(state.name) + '/restore', {method: 'POST'})
+        .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+        .then(function (result) {
+            if (!result.ok) {
+                showToast(result.data.error || '没有可恢复的版本', 'error');
+                return;
+            }
+            state.definition = clone(result.data.definition);
+            state.file = result.data.file;
+            state.dirty = false;
+            renderErrors([]);
+            renderAll();
+            showToast('已恢复备份', 'success');
+        })
+        .catch(function (err) { showToast('恢复失败：' + err.message, 'error'); });
+}
+
+function createPipeline() {
+    var name = prompt('新流程名称（字母、数字、下划线或短横线）');
+    if (!name) return;
+    fetch('/api/pipelines', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, definition: state.definition})
+    })
+    .then(function (r) { return r.json().then(function (data) { return {ok: r.ok, data: data}; }); })
+    .then(function (result) {
+        if (!result.ok) {
+            showToast(result.data.error || (result.data.errors || []).join('；') || '创建失败', 'error');
+            return;
+        }
+        location.href = '/pipeline?name=' + encodeURIComponent(result.data.name);
+    })
+    .catch(function (err) { showToast('创建失败：' + err.message, 'error'); });
+}
+
+function deletePipeline() {
+    if (state.name === 'default') return;
+    if (!confirm('删除流程 ' + state.name + '？此操作不可撤销。')) return;
+    fetch('/api/pipelines/' + encodeURIComponent(state.name), {method: 'DELETE'})
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.status === 'ok') {
+                location.href = '/pipeline';
+            } else {
+                showToast(data.error || '删除失败', 'error');
+            }
+        })
+        .catch(function (err) { showToast('删除失败：' + err.message, 'error'); });
+}
+
+function switchPipeline(name) {
+    if (state.dirty && !confirm('当前流程有未保存的修改，仍要切换吗？')) {
+        document.getElementById('pipeline-select').value = state.name;
+        return;
+    }
+    location.href = '/pipeline?name=' + encodeURIComponent(name);
+}
+
+window.addEventListener('beforeunload', function (event) {
+    if (state.dirty) {
+        event.preventDefault();
+        event.returnValue = '';
+    }
+});
+
+renderAll();
+</script>
+{% endblock %}

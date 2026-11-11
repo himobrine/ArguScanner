@@ -1,0 +1,90 @@
+pipeline:
+  name: default_recon
+  description: 默认侦察流程（第一轮）
+  version: 2
+
+# 层级（level）决定执行顺序：同一层级内的阶段并发执行。
+# inputs 声明数据接入：from 指向上游阶段，data 是连线/数据类型标签。
+stages:
+  - id: subdomain_enum
+    plugin: oneforall
+    label: 子域名枚举
+    level: 1
+    depends_on: []
+    after: []
+    description: OneForAll 子域名枚举
+    when:
+      target_type: domain
+    outputs:
+      data: subdomain
+
+  - id: port_scan
+    plugin: nmap_scan
+    label: 端口扫描
+    level: 1
+    depends_on: []
+    after: []
+    description: Nmap 端口扫描（已扫描 IP 自动跳过）
+    when: {}
+    outputs:
+      data: port
+
+  - id: http_probe
+    plugin: httpx_probe
+    label: HTTP 存活探测
+    level: 2
+    depends_on: []
+    after: [subdomain_enum]
+    description: httpx HTTP 存活检测
+    when:
+      target_type: [domain, ip]
+    inputs:
+      - from: subdomain_enum
+        data: subdomain
+    outputs:
+      data: url
+
+  - id: js_url_extract
+    plugin: jsfinder
+    label: JS 链接提取
+    level: 3
+    depends_on: [http_probe]
+    after: []
+    description: JSFinder JavaScript URL 提取
+    when:
+      target_type: [domain, ip]
+    inputs:
+      - from: http_probe
+        data: url
+    outputs:
+      data: js_url
+
+  - id: urlfinder_extract
+    plugin: urlfinder
+    label: URL 深度提取
+    level: 3
+    depends_on: [http_probe]
+    after: []
+    description: URLFinder 页面 URL 和 JS 提取
+    when:
+      target_type: [domain, ip]
+    inputs:
+      - from: http_probe
+        data: url
+    outputs:
+      data: url
+
+  - id: api_probe
+    plugin: api_probe
+    label: API 端点探测
+    level: 3
+    depends_on: [http_probe]
+    after: []
+    description: API 端点探测（Swagger/OpenAPI/GraphQL/Actuator）
+    when:
+      target_type: [domain, ip]
+    inputs:
+      - from: http_probe
+        data: url
+    outputs:
+      data: api
