@@ -571,7 +571,7 @@ flask>=3.0
 
 ## 许可证
 
-本项目采用 **GNU Affero General Public License v3.0 or later（AGPL-3.0-or-later）** 发布，完整条款见 [LICENSE](LICENSE)。
+本项目采用 **GNU Affero General Public License v3.0 or later（AGPL-3.0-or-later）** 发布，完整条款见 [LICENSE](LICENSE)，授权声明见 [NOTICE](NOTICE)。
 
 内置的第三方工具 `httpx` 与 `URLFinder` 仍分别遵循其自带的 MIT 许可证，许可证文件位于 `arguscaner/tools/` 对应目录。
 
